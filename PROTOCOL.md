@@ -1,6 +1,6 @@
 # 豆瓣内容网页协议笔记
 
-本文记录 `douban.el` 截至 **2026-08-08** 所实现的豆瓣长评、日记、读书笔记和普通广播协议。它不是豆瓣官方文档；这些网页接口没有稳定性保证。
+本文记录 `douban.el` 截至 **2026-08-27** 所实现的豆瓣长评、日记、读书笔记和普通广播协议。它不是豆瓣官方文档；这些网页接口没有稳定性保证。
 
 ## 实现结论
 
@@ -21,8 +21,8 @@
 | `annotation` | 当前新式读书笔记 | topic Draft.js raw | 创建、更新 |
 | `status` | 普通广播 | personal/topic Draft.js raw，支持图片、用户 mention 与行内条目引用 | 创建、更新 |
 
-源稿仅支持 Markdown 和 Org。Markdown 只接受规范的顶层 `douban:`
-mapping，且其中必须且只能包含 `review`、`note`、`annotation` 或 `status` 中的一个子
+源稿仅支持 Markdown，只接受规范的顶层 `douban:` mapping，且其中必须且
+只能包含 `review`、`note`、`annotation` 或 `status` 中的一个子
 mapping；唯一子 mapping 的名称确定稿件类型，不保存 `kind`，也不从其他
 字段推断。`id`、`privacy` 等是类型子 mapping 内的
 叶子字段。例如：
@@ -41,45 +41,36 @@ douban:
 叶子字段，未知类型、多个类型、未知字段和跨类型字段即使为空也直接报错。
 图片处理结果不属于 metadata，也不会写回源稿。
 
-Org 用值为空的 `#+DOUBAN_REVIEW:`、`#+DOUBAN_NOTE:`、
-`#+DOUBAN_ANNOTATION:` 或 `#+DOUBAN_STATUS:` 作为唯一内容类型标记，
-叶子字段则使用完整路径，例如
-`#+DOUBAN_REVIEW_SUBJECT_ID:`、`#+DOUBAN_NOTE_PRIVACY:` 和
-`#+DOUBAN_STATUS_ID:`。标记本身的值必须为空；缺少标记、出现多个
-标记、使用不带类型路径的字段或把别的类型字段放在当前标记下都会报错。
-
 读书笔记接受可选的 `annotation.privacy` 与 `annotation.explanation-types`。
 普通广播还接受可选的 `status.explanation-types` 与 `status.anthology-id`。
 四类内容都只保存 `id`；普通广播的 `status.id` 是创建响应返回、更新 API
 使用的 personal topic ID。URL 不属于源稿 metadata，只用于能够可靠得到
 URL 的响应校验和完成消息，不写回源稿。
-标题只取源稿中用户手写的顶层 `title` / `#+TITLE`；不会从条目名称或
+标题只取源稿中用户手写的顶层 `title`；不会从条目名称或
 文件名推导。普通广播没有标题。实现不接受 Typst。
-长评、读书笔记和普通广播都不接受 `original` 叶子字段或对应的 Org
-关键字；原创声明由全局 `douban-default-original` 与更新语义决定。
-读书笔记和普通广播也不接受回复范围叶子字段或对应的 Org 关键字；新建时
+长评、读书笔记和普通广播都不接受 `original` 叶子字段；原创声明由全局
+`douban-default-original` 与更新语义决定。
+读书笔记和普通广播也不接受回复范围叶子字段；新建时
 由全局 `douban-default-reply-limit` 决定，更新时按下文规则保留远端状态。
 
 源稿中的枚举使用可读值，网页协议码只在请求边界生成：
 `review.rtype` 的 `review` / `guide` 映射为 `R` / `G`，`note.privacy` 的
 `public` / `friends` 映射为 `P` / `F`；内容说明的语义值映射见广播发布
 设置一节。统一 metadata CAPF 先补全内容类型，再补全该类型允许且尚未出现的
-叶子字段或完整 Org 关键字，也补全这些枚举值。新长评的 `subject-id` 还可在
+叶子字段，也补全这些枚举值。新长评的 `subject-id` 还可在
 同一 `review` 中已有明确 `subject-type` 时按非空名称动态搜索；游戏评论的
 `platforms` 可根据已有条目 ID 动态读取。
 候选 annotation 只用于存在歧义、使用缩写、表达豆瓣特有语义或需要呈现正式
 声明文本的值；其余自解释候选不加旁注。
 
-这些编辑期能力由 buffer-local `douban-mode` 统一安装。进入 Markdown mode
-时，YAML front matter 中存在顶层 `douban:` 便自动启用；进入 Org mode 时，
-存在文档级内容类型标记便自动启用。检测只识别结构标记，不执行完整 metadata
-校验，因此字段尚不完整的源稿仍可获得补全；尚未写出标记的受支持文件可手动
-启用。关闭 mode 会移除本地 CAPF 与 revert hook，并清空用户、文集、条目和
-平台候选缓存。发布命令独立验证源稿，不以 mode 是否启用为条件。
+这些编辑期能力由 buffer-local `douban-mode` 统一安装。它不会自动扫描或
+识别普通 Markdown 文件；`douban-new-review` 会在新稿中显式启用，其他源稿
+按需手动启用。关闭 mode 会移除本地 CAPF 与 revert hook，并清空用户、文集、
+条目和平台候选缓存。发布命令独立验证源稿，不以 mode 是否启用为条件。
 
 `review.explanation-types` 与 `status.explanation-types` 的源稿值都是严格
-单选的标量枚举。Markdown 不接受 YAML sequence，Markdown 与 Org 都不接受
-逗号拼接的多值；字段名中的复数不表示列表。
+单选的标量枚举。不接受 YAML sequence 或逗号拼接的多值；字段名中的复数
+不表示列表。
 
 Markdown front matter 的每一层 mapping 都要求 key 唯一；重复 key 会在
 yaml.el 覆盖旧值之前直接报错。为保证 metadata checkpoint 重写
@@ -179,8 +170,7 @@ Referer: https://www.douban.com/search
 
 规范 URL 输入不发搜索请求，但仍须服从先选定的品类。图书、音乐和游戏 URL 的主机必须与品类一致；电影和剧集共用 `movie.douban.com` 条目 URL，主机本身不能区分二者，因此以显式选择的 `movie` 或 `tv` 为准。
 
-统一 metadata CAPF 复用同一匿名搜索。在 Markdown 的
-`review.subject-id` 值槽或 Org 的 `#+DOUBAN_REVIEW_SUBJECT_ID:` 中输入
+统一 metadata CAPF 复用同一匿名搜索。在 `review.subject-id` 值槽中输入
 非空名称时，只有同一个 `review` 已提供合法 `subject-type`，并且尚未存在
 `review.id`，才按该品类请求候选。候选显示名称、副标题、品类和 ID；完成时
 临时显示文字会被替换为规范 ID。值槽已经是正整数 ID 时不请求网络，也不把它
@@ -207,11 +197,7 @@ platforms:
 ```
 
 YAML flow sequence（例如 `platforms: ['1', '2']`）仍可作为 metadata
-读取，但不提供 completion-at-point。Org 使用一个逗号分隔列表：
-
-```org
-#+DOUBAN_REVIEW_PLATFORMS: 1,2
-```
+读取，但不提供 completion-at-point。
 
 ### 建立会话
 
@@ -289,7 +275,8 @@ metadata，也不尝试伪装移动客户端。
 
 ## Draft.js 富文本
 
-长评、日记、读书笔记和普通广播共享 Draft.js raw 结构。四者都先把 Markdown 或 Org 转成 HTML，再转成 raw。最小结构：
+长评、日记、读书笔记和普通广播共享 Draft.js raw 结构。四者都先把
+Markdown 转成 HTML，再转成 raw。最小结构：
 
 ```json
 {
@@ -316,18 +303,14 @@ Draft.js 的 offset 与 length 是 JavaScript UTF-16 code unit，不是 Emacs �
 range，而以 `alt` 文字参与当前 block；空白或缺失 `alt` 时不产生文字。
 因此行内图片不会进入上传流程。
 
-Markdown 与 Org task list 的 checkbox 在 Pandoc HTML 中都是 `input`
-节点。转换器把 checked/unchecked 分别写为 `☑ ` / `☐ `，随后仍生成
-普通的 list item block；豆瓣端不会得到可交互 checkbox。
-
 居中采用当前编辑器的 block data，而不是旧的 `center-block` 类型：
 
 ```json
 {"type":"unstyled","data":{"align":"center"}}
 ```
 
-Markdown `<div style="text-align: center">...</div>` 与 Org
-`#+begin_center` 都产生居中容器。Pandoc 将 Markdown HTML 转为带有
+Markdown `<div style="text-align: center">...</div>` 产生居中容器。
+Pandoc 将 Markdown HTML 转为带有
 `text-align` 内联 CSS 的原生 Div，转换器再读取该属性。直接普通段落和
 标题保留各自 block type，并设置 `align:"center"`；独立图片仍为普通
 atomic IMAGE，不附加 align。列表、引用、代码、表格、分隔线、卡片、
@@ -360,10 +343,7 @@ URL 保持原样。URL 中的 fragment 先按 UTF-8 percent decoding 查找，�
 这些约束，不会限制无导航需求的旧文章。
 
 Markdown 顶层 `toc: true` 会在正文开头插入一个私有 HTML 标记；
-`toc-depth` 接受 1–6，默认 3。Org 的 `#+TOC: headlines N` 由 Lua filter
-在 Pandoc AST 中原位替换为同一标记；`N` 接受 1–3，默认 3，源码块内的
-同名文字忽略，嵌套、重复或其他形式明确拒绝。Org 限制到三级是因为当前
-Pandoc Org reader 只把前三层 headline 可靠地表示为 HTML heading。
+`toc-depth` 接受 1–6，默认 3。
 
 HTML 转 Draft 时，标记展开为一个完整 `BOLD` 的普通“目录”块，随后每个
 标题生成一个 `unordered-list-item` 和覆盖完整文字的 `LINK` entity。
@@ -392,20 +372,18 @@ Referer: https://www.douban.com/
 `https://www.douban.com/people/{uid}/` URL，并且响应中的 `followed` 必须
 为 true；搜索端点本身可能返回全站用户，实现会在本地丢弃未关注和畸形
 候选。`douban-insert-user-mention` 先让用户选择确定候选，再把三项身份
-写入 Markdown 或 Org 的私有链接标记；普通用户主页链接和裸 `@名字` 都
+写入 Markdown 的私有链接标记；普通用户主页链接和裸 `@名字` 都
 不会自动升级为 mention。
 
-Markdown 中的 `douban-mode` 把非空 `@query` 暴露给
-completion-at-point，候选表为 exclusive，仍只含已关注用户；Org 不安装
-这项 CAPF，继续使用显式插入命令。YAML front matter、邮箱或 URL 中的 `@`、
+`douban-mode` 把非空 `@query` 暴露给 completion-at-point，候选表为
+exclusive，仍只含已关注用户。YAML front matter、邮箱或 URL 中的 `@`、
 反引号 code span、fenced code 和 raw HTML 不构成补全位置。completion
 前端只有在 `finished` 或 `exact` 状态才把候选固化为源标记；`sole` 只表示
 还能继续 cycling，不能提前提交。回调依靠 marker 回到源 buffer，因此即使
 由 minibuffer 或 Completions buffer 调用也不会误改当前 buffer。
 
-Markdown 私有链接的可见文字逐字符写成 HTML 数字字符引用，Org 再用
-`@@html:...@@` 包裹同一 anchor。这避免用户名中的强调符、反引号、HTML
-entity、标签形文本或 emoji 被 Pandoc 重新解释。
+私有链接的可见文字逐字符写成 HTML 数字字符引用。这避免用户名中的强调符、
+反引号、HTML entity、标签形文本或 emoji 被 Pandoc 重新解释。
 
 转换后的 Draft entity 为：
 
@@ -429,17 +407,13 @@ code unit。长评、日记、读书笔记和普通广播的正文都提交 Draf
 
 ### 行内条目引用
 
-Markdown 和 Org 都直接使用各自的普通文字超链接语法，不引入私有标记：
+Markdown 直接使用普通文字超链接语法，不引入私有标记：
 
 ```markdown
 [这本书](https://book.douban.com/subject/4908885/)
 ```
 
-```org
-[[https://book.douban.com/subject/4908885/][这本书]]
-```
-
-HTML 到 raw 的第一步仍把它们生成为可变的 inline `LINK`。若 URL 能被
+HTML 到 raw 的第一步仍把它生成为可变的 inline `LINK`。若 URL 能被
 严格解析为图书、影视、音乐或游戏的规范豆瓣条目 URL，发布前再复用
 `get_url_info` 匿名接口核对条目，并把 entity 原位升级。
 
@@ -477,27 +451,21 @@ fragment、额外路径、用户信息或非默认端口。最终 entity 为：
 
 ### 链接卡片
 
-链接卡片沿用 `zhihu.el` 的 `link-card` 源稿与中间 HTML 约定，必须由
-源稿显式标记，而且必须是文档顶层的独立链接段落。Markdown 用链接
-title `"card"`：
+链接卡片与 `zhihu.el` 共享 Microformats2 的 `h-cite` HTML 源稿约定，
+必须作为文档顶层的独立内容。根节点必须含 `h-cite` class；内部必须且
+只能各有一个 `u-url` 与 `p-name` 元素，其中 `u-url` 必须是 `<a>`：
 
-```markdown
-[示例文章](https://example.com/articles/1 "card")
+```html
+<div class="h-cite">
+  <a class="u-url p-name" href="https://example.com/articles/1">示例文章</a>
+</div>
 ```
 
-Org 用紧邻独立链接的 `ATTR_DOUBAN`：
-
-```org
-#+ATTR_DOUBAN: :type link-card
-[[https://example.com/articles/1][示例文章]]
-```
-
-Pandoc 中间 HTML 与 `zhihu.el` 一样使用
-`data-draft-node="block"`、`data-draft-type="link-card"`、
-源稿链接标题对应的 `data-draft-title` 和空 `data-draft-cover`。进入
-豆瓣 Draft.js 协议时先生成 `type: "atomic"` 的块和不可变的 `LINK`
-占位 entity；未带标记的外部链接仍生成普通的可变 `LINK` entity，未带
-标记的豆瓣条目链接则按上一节升级为 inline `SUBJECT`。
+Pandoc 原样保留该 HTML。进入豆瓣 Draft.js 协议时，`u-url` 的 `href`
+与 `p-name` 的规范化可见文字先生成 `type: "atomic"` 的块和不可变的
+`LINK` 占位 entity；普通外部链接仍生成可变 `LINK` entity，普通豆瓣
+条目链接则按上一节升级为 inline `SUBJECT`。h-cite 内其余通用字段只供
+Blog 展示，不进入豆瓣卡片占位数据。
 
 卡片链接必须是带主机名的绝对 HTTP 或 HTTPS URL，可以指向外部站点，
 也可以是 HTTP 豆瓣条目；相对地址、scheme-relative 地址和其他协议均
@@ -532,14 +500,7 @@ HTTPS。实现保留服务端返回的其他字段，并统一补上
 reader 中提供非默认 `mark` 扩展。手写的 Markdown 原生 HTML
 `<mark>...</mark>` 始终只生成行内 `MARK`，不会触发块高亮升级。
 
-Org 没有官方高亮定界符。本包沿用 `org-extra-emphasis` 的黄色高亮惯例：
-
-```org
-普通段落里的 !!高亮文字!!。
-```
-
-只作用于 Org 输入的 filter 把 `!!...!!` 转成 Pandoc mark span。之后的
-Pandoc filter 只检查文档顶层 block，Markdown 和 Org 使用同一规则：
+之后的 Pandoc filter 只检查文档顶层 block：
 
 - 普通 block 中只包住部分文字时，生成 UTF-16 offset/length 的 `MARK`
   range。
@@ -549,8 +510,7 @@ Pandoc filter 只检查文档顶层 block，Markdown 和 Org 使用同一规则�
 
 块高亮中的其他行内样式和普通链接沿用既有转换，但不接受图片或链接卡片。
 多个块高亮需要逐段包裹。标题、列表项、引用和居中段落即使完整包裹，也保留
-原 block type 并生成行内 `MARK`。不再识别 `::: douban-highlight` 或
-`#+begin_douban-highlight` 容器。
+原 block type 并生成行内 `MARK`。不再识别 `::: douban-highlight` 容器。
 
 三类内容的正文图片都在每次发布时重新解析，并按每个图片出现位置独立执行各自协议；即使多个位置引用同一图片源，也不会复用先前的处理结果。图片处理结果不会写入源稿 metadata。
 
@@ -602,10 +562,9 @@ X-CSRF-TOKEN: {ck}
 
 文集是整篇内容的发布字段，不是 Draft.js entity。它只用于普通广播：源稿
 `status.anthology-id` 只持久化正整数 ID，并作为字符串 `anthology_id`
-写入 topic payload。Markdown `douban.status` 子 mapping 中的
-`anthology-id:` 值槽和 Org 文档关键字
-`#+DOUBAN_STATUS_ANTHOLOGY_ID:` 由 `douban-mode` 注册
-completion-at-point；候选主文本是当前登录账号的文集名称，旁注显示篇数，
+写入 topic payload。`douban.status` 子 mapping 中的 `anthology-id:` 值槽
+由 `douban-mode` 注册 completion-at-point；候选主文本是当前登录账号的
+文集名称，旁注显示篇数，
 重名时才附加 ID。补全列表直到前端真正枚举候选时才读取，并按源 buffer
 缓存；最终选定后才把名称替换为规范 ID。创建时未设置便省略
 `anthology_id`；更新已有普通广播时未设置表示沿用 edit state 中的文集。
@@ -806,8 +765,8 @@ topic ID 只进入 URL，实际 JSON body 不带 `id`。更新时实现保留远
 
 ### 读书笔记中的引用
 
-本实现不生成编辑器专用的原生摘录块。Markdown 和 Org 的引用均按普通
-`blockquote` 编译；章节、页码等出处信息需要作为可见正文编写。
+本实现不生成编辑器专用的原生摘录块。Markdown 引用按普通 `blockquote`
+编译；章节、页码等出处信息需要作为可见正文编写。
 
 ### 读书笔记图片
 
@@ -855,7 +814,7 @@ Origin: https://www.douban.com
 }
 ```
 
-`content` 不是嵌套 JSON 对象，而是 Draft.js raw 再 `JSON.stringify` 一次所得的字符串；因此整个请求是二次 JSON 编码。正文由 Markdown 或 Org 经 HTML 转成 raw，可以包含普通格式、图片、链接卡片和块高亮。无图时 `image_ids` 是空字符串；有图时按公共 topic 图片协议提交图片 ID 和 `image_layout: "vertical"`。设置了 `status.anthology-id` 时才增加字符串 `anthology_id`。`group_id` 必须是字符串 `"0"`，不能省略，也不是 JSON 数字 `0`。
+`content` 不是嵌套 JSON 对象，而是 Draft.js raw 再 `JSON.stringify` 一次所得的字符串；因此整个请求是二次 JSON 编码。正文由 Markdown 经 HTML 转成 raw，可以包含普通格式、图片、链接卡片和块高亮。无图时 `image_ids` 是空字符串；有图时按公共 topic 图片协议提交图片 ID 和 `image_layout: "vertical"`。设置了 `status.anthology-id` 时才增加字符串 `anthology_id`。`group_id` 必须是字符串 `"0"`，不能省略，也不是 JSON 数字 `0`。
 
 ### 广播发布设置
 

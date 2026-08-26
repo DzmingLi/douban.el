@@ -1,6 +1,6 @@
 # douban.el
 
-在 Emacs 里用 Markdown 或 Org 编写并发布豆瓣长评、日记、读书笔记和普通广播。
+在 Emacs 里用 Markdown 编写并发布豆瓣长评、日记、读书笔记和普通广播。
 
 > [!WARNING]
 > 这是实验性软件，依赖豆瓣未公开的网页接口。接口随时可能变化。当前仅支持 GNU/Linux，其中 Firefox 组合测试最充分。
@@ -15,7 +15,7 @@
 - `curl` 可执行程序，作为 `plz` 的底层 HTTP 传输；
 - [`yaml`](https://elpa.gnu.org/packages/yaml.html) 1.2.4 或更新版本，用于 Markdown metadata；
 - [`markdown-mode`](https://jblevins.org/projects/markdown-mode/) 2.7 或更新版本，用于编辑 Markdown 源稿；
-- [`pandoc`](https://pandoc.org/) 3.0 或更新版本，用于转换 Markdown 和 Org 正文；
+- [`pandoc`](https://pandoc.org/) 3.0 或更新版本，用于转换 Markdown 正文；
 - 已在受支持的浏览器 profile 中登录豆瓣。
 
 
@@ -44,7 +44,7 @@ Firefox Container 还应显式设置对应的 `originAttributes`，普通非 Con
 ### 新建长评源稿
 
 `M-x douban-new-review` 先选择品类，再通过名称搜索或标准条目 URL 选择评论
-对象，最后创建 `.md`、`.markdown` 或 `.org` 源稿。文件选择器默认从
+对象，最后创建 `.md` 或 `.markdown` 源稿。文件选择器默认从
 `douban-review-directory` 开始；该目录和源稿的父目录不存在时都会递归
 创建，目标文件已存在则直接报错。创建成功后，源稿会在一个新 tab 中打开并
 启用 `douban-mode`。本命令只生成本地模板，不打开网页编辑器。
@@ -53,8 +53,8 @@ Firefox Container 还应显式设置对应的 `originAttributes`，普通非 Con
 
 读书笔记不提供专门的新建命令。在普通 Markdown 文件的顶层 `douban:` 下
 调用当前补全前端，选择 `annotation:`，随后可继续补全 `subject-id:`、
-`privacy:` 等字段；Org 中对应补全 `DOUBAN_ANNOTATION` 字段。日记和普通
-广播同样直接在普通 Markdown 或 Org 文件中写出类型标记，然后执行
+`privacy:` 等字段。日记和普通广播同样直接在普通 Markdown 文件中写出
+类型标记，然后执行
 `M-x douban-publish`。
 
 读书笔记只支持当前“新笔记”协议，不导入已有笔记，也不兼容旧的
@@ -65,14 +65,7 @@ Markdown 的 `douban:` 必须且只能包含 `review`、`note`、`annotation` �
 省略 `id`；一旦写出 ID 字段，其值就必须是
 非空正整数。
 
-
-Org 使用值为空的 `#+DOUBAN_REVIEW:`、`#+DOUBAN_NOTE:`、
-`#+DOUBAN_ANNOTATION:` 或 `#+DOUBAN_STATUS:` 作为唯一内容类型标记；
-其余字段使用包含类型的完整路径，
-例如 `#+DOUBAN_REVIEW_SUBJECT_ID:`、`#+DOUBAN_NOTE_PRIVACY:` 和
-`#+DOUBAN_STATUS_ID:`。标记本身必须保留空值。
-
-`douban-mode` 不会扫描或自动识别普通 Markdown 和 Org 文件。
+`douban-mode` 不会扫描或自动识别普通 Markdown 文件。
 `douban-new-review` 创建的长评源稿会显式启用它；手工创建或重新打开其它
 豆瓣源稿时，按需运行：
 
@@ -81,9 +74,7 @@ M-x douban-mode
 ```
 
 
-下列字段表使用 Markdown 各类型子 mapping 中的叶子名称；Org 在字段名前
-加上相应的 `DOUBAN_REVIEW_`、`DOUBAN_NOTE_`、`DOUBAN_ANNOTATION_` 或
-`DOUBAN_STATUS_` 前缀。
+下列字段表使用各类型子 mapping 中的叶子名称。
 
 `review` 字段：
 
@@ -113,16 +104,6 @@ douban:
       - '1'
       - '2'
 ```
-
-Org 在同一个关键字值中使用逗号分隔：
-
-```org
-#+DOUBAN_REVIEW:
-#+DOUBAN_REVIEW_SUBJECT_ID: 36932396
-#+DOUBAN_REVIEW_SUBJECT_TYPE: game
-#+DOUBAN_REVIEW_PLATFORMS: 1,2
-```
-
 
 `note` 字段：
 
@@ -185,8 +166,6 @@ douban:
     explanation-types: ai-generated
 ```
 
-Org 使用 `#+DOUBAN_STATUS_EXPLANATION_TYPES`。
-
 长评、读书笔记和普通广播都不接受 `original` metadata。
 `douban-default-original` 是唯一的原创声明开关，默认为 `t`：新建这三类
 内容时使用它，更新长评时也由它控制；更新读书笔记和普通广播时
@@ -231,8 +210,8 @@ M-x douban-new-anthology
 
 ### 读书笔记中的引用
 
-读书笔记沿用普通引用语法：Markdown 使用 `>`，Org 使用 quote block；
-发布后都是普通 `blockquote`。本包不生成豆瓣原生摘录块，也不解析章节、
+读书笔记沿用 Markdown 普通引用语法 `>`；发布后是普通 `blockquote`。
+本包不生成豆瓣原生摘录块，也不解析章节、
 页码元数据；如需记录出处，请把章节和页码直接写入可见正文。
 
 ### 文章内链接与目录
@@ -244,17 +223,6 @@ fragment 链接，并给目标标题设置稳定 ID：
 [跳到结论](#conclusion)
 
 ## 结论 {#conclusion}
-```
-
-Org 使用 `CUSTOM_ID`：
-
-```org
-[[#conclusion][跳到结论]]
-
-* 结论
-:PROPERTIES:
-:CUSTOM_ID: conclusion
-:END:
 ```
 
 发布时会把源稿 ID 改写为豆瓣公开页实际使用的标题文字锚点；带 fragment
@@ -270,14 +238,8 @@ toc: true
 toc-depth: 3
 ```
 
-`toc-depth` 可选，范围为 1–6，省略时为 3。Markdown 目录固定出现在正文
-开头。Org 使用原生指令，并在指令所在位置生成目录：
-
-```org
-#+TOC: headlines 2
-```
-
-Org 的可选深度范围为 1–3，省略时为 3。豆瓣没有独立目录实体；生成结果是
+`toc-depth` 可选，范围为 1–6，省略时为 3。目录固定出现在正文开头。
+豆瓣没有独立目录实体；生成结果是
 正文中的粗体“目录”段落和带文章内链接的嵌套普通列表，因此发布后的内容也能
 在网页端继续编辑。
 
@@ -309,27 +271,26 @@ M-x douban-search-subject
 ```
 
 选择品类并输入名称（也可以直接输入规范 URL）后，命令会让你选择搜索结果，
-并把规范条目 URL 直接插入光标处。随后可以把 URL 用在普通 Markdown/Org
-链接或下面的显式卡片语法中。这里的规范 URL 指 HTTPS 的
+并把规范条目 URL 直接插入光标处。随后可以把 URL 用在普通 Markdown
+链接或下面的 `h-cite` 卡片中。这里的规范 URL 指 HTTPS 的
 `book/movie/music.douban.com/subject/ID/` 或
 `www.douban.com/game/ID/`，不带 query、fragment 或额外路径。
 
 ### 链接卡片
 
-Markdown 必须把带有 `"card"` title 的链接单独放成一段：
+链接卡片直接使用 Microformats2 的 `h-cite` HTML，并作为文档顶层的
+独立内容。`u-url` 与 `p-name` 必须各出现一次：
 
-```markdown
-[示例文章](https://example.com/articles/1 "card")
+```html
+<div class="h-cite">
+  <a class="u-url p-name" href="https://example.com/articles/1">示例文章</a>
+</div>
 ```
 
-Org 必须先写 `ATTR_DOUBAN`，再紧跟一个独立链接段落：
-
-```org
-#+ATTR_DOUBAN: :type link-card
-[[https://example.com/articles/1][示例文章]]
-```
-
-卡片地址必须是带主机名的绝对 HTTP 或 HTTPS URL
+`u-url` 必须是带主机名的绝对 HTTP 或 HTTPS 链接，`p-name` 的可见文字
+用作卡片标题。Blog 可以直接为 `.h-cite` 添加样式，并继续使用
+`p-author`、`p-publication`、`dt-published` 等通用字段；douban.el 只提取
+发布原生卡片所需的 URL 和标题。
 
 
 发布前，程序通过豆瓣当前的 URL 解析接口取得卡片数据；服务端按 URL 返回原生
@@ -345,8 +306,8 @@ Org 必须先写 `ATTR_DOUBAN`，再紧跟一个独立链接段落：
 M-x douban-publish
 ```
 
-命令会保存当前 buffer，按 `douban` 中唯一的子 mapping 或 Org 中唯一的
-内容类型标记确定稿件类型，并直接执行对应发布流程。
+命令会保存当前 buffer，按 `douban` 中唯一的子 mapping 确定稿件类型，
+并直接执行对应发布流程。
 `douban-publish` 不依赖 `douban-mode`；即使没有自动识别、手动关闭了 mode，
 只要源稿 metadata 合法，仍可照常发布。
 

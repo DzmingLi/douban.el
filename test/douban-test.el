@@ -64,15 +64,6 @@ BEFORE-FORM 原样插入目标表单之前，可用于构造同名字段干扰�
     "value: 'dummy-token'}};\n"
     "</script></body></html>")))
 
-(defun douban-test--card-html (&optional url title)
-  "返回 URL 和 TITLE 对应的链接卡片 HTML。"
-  (format
-   (concat
-    "<a data-draft-node=\"block\" data-draft-type=\"link-card\" "
-    "data-draft-title=\"%s\" data-draft-cover=\"\" href=\"%s\">%s</a>")
-   (or title "局外人")
-   (or url "https://book.douban.com/subject/4908885/")
-   (or title "局外人")))
 
 (defun douban-test--status-raw (&rest lines)
   "返回以 LINES 为普通段落的广播 Draft.js raw 内容。"
@@ -320,14 +311,7 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
                 (douban--yaml-string title)))
              (douban--format-yaml-meta meta)))
            (markdown-meta
-            (douban--md-frontmatter-meta markdown))
-           (org-meta
-            (with-temp-buffer
-              (org-mode)
-              (when title
-                (insert "#+TITLE: " title "\n"))
-              (insert (douban--format-org-meta meta))
-              (douban--org-buffer-meta))))
+            (douban--md-frontmatter-meta markdown)))
       (dolist
           (field
            (append
@@ -343,14 +327,6 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
         (should
          (equal
           (plist-get markdown-meta field)
-          (plist-get meta field)))
-        (should
-         (eq
-          (and (plist-member org-meta field) t)
-          (and (plist-member meta field) t)))
-        (should
-         (equal
-          (plist-get org-meta field)
           (plist-get meta field)))))))
 
 (ert-deftest douban-test-markdown-enums-serialize-as-plain-scalars ()
@@ -430,10 +406,10 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
       'review :rtype bad)
      :type 'error)))
 
-(ert-deftest douban-test-source-formats-are-markdown-and-org-only ()
+(ert-deftest douban-test-source-formats-are-markdown-only ()
   (should (eq (douban--file-format "review.md") 'markdown))
   (should (eq (douban--file-format "review.markdown") 'markdown))
-  (should (eq (douban--file-format "review.org") 'org))
+  (should-not (douban--file-format "review.org"))
   (should-not (douban--file-format "review.typ"))
   (should-error
    (douban--require-source-format
@@ -1083,81 +1059,9 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
        "必须直接写成未加引号的顶层 douban:"
        (error-message-string err))))))
 
-(ert-deftest douban-test-org-meta-roundtrip-preserves-keywords ()
-  (douban-test--with-temp-file
-   ".org"
-   (concat
-    "#+TITLE: Org 评论\n"
-    "#+AUTHOR: Someone\n"
-    "#+BANNER: ./images/banner.jpg\n"
-    "#+DOUBAN_REVIEW:\n"
-    "#+DOUBAN_REVIEW_SUBJECT_ID: 123\n"
-    "#+DOUBAN_REVIEW_SUBJECT_TYPE: book\n"
-    "#+DOUBAN_REVIEW_RATING: 3\n"
-    "\n* 正文\n内容。\n")
-   (let ((meta (douban--read-meta file)))
-     (should (equal (plist-get meta :title) "Org 评论"))
-     (should (= (plist-get meta :rating) 3))
-     (setq meta (plist-put meta :review-id "456"))
-     (douban--write-meta file meta))
-   (let ((text
-          (with-temp-buffer
-            (insert-file-contents file)
-            (buffer-string)))
-         (roundtrip (douban--read-meta file)))
-     (should (string-match-p "#\\+AUTHOR: Someone" text))
-     (should
-      (string-match-p
-       "#\\+BANNER: ./images/banner\\.jpg" text))
-     (should (string-match-p "\\* 正文\n内容。" text))
-     (should (equal (plist-get roundtrip :review-id) "456")))))
 
-(ert-deftest douban-test-org-empty-optional-keywords-are-omitted ()
-  (douban-test--with-temp-file
-      ".org"
-      (concat
-       "#+TITLE: 标题\n"
-       "#+DOUBAN_REVIEW:\n"
-       "#+DOUBAN_REVIEW_SUBJECT_ID: 1\n"
-       "#+DOUBAN_REVIEW_SUBJECT_TYPE: book\n"
-       "#+DOUBAN_REVIEW_INTRODUCTION:\n"
-       "#+DOUBAN_REVIEW_RATING:\n"
-       "#+DOUBAN_REVIEW_SPOILER:\n"
-       "#+DOUBAN_REVIEW_RTYPE:\n"
-       "#+DOUBAN_REVIEW_PLATFORMS:\n")
-    (let ((meta (douban--org-meta file)))
-      (dolist
-          (field
-           '(:introduction :rating :spoiler :rtype :platforms))
-        (should-not (plist-get meta field))))))
 
-(ert-deftest douban-test-org-rejects-empty-required-duplicate-and-unknown-keywords ()
-  (dolist
-      (contents
-       '("#+TITLE: 标题\n#+DOUBAN_REVIEW:\n#+DOUBAN_REVIEW_SUBJECT_ID:\n#+DOUBAN_REVIEW_SUBJECT_TYPE: book\n"
-         "#+TITLE: 标题\n#+DOUBAN_REVIEW:\n#+DOUBAN_REVIEW_SUBJECT_ID: 1\n#+DOUBAN_REVIEW_SUBJECT_ID: 2\n#+DOUBAN_REVIEW_SUBJECT_TYPE: book\n"
-         "#+TITLE: 标题\n#+DOUBAN_REVIEW:\n#+DOUBAN_REVIEW_SUBJECT_ID: 1\n#+DOUBAN_REVIEW_SUBJECT_TYPE: book\n#+DOUBAN_REVIEW_RATING: 4\n#+DOUBAN_REVIEW_RATING: 5\n"
-         "#+TITLE: 标题\n#+DOUBAN_REVIEW:\n#+DOUBAN_REVIEW_SUBJECT_ID: 1\n#+DOUBAN_REVIEW_SUBJECT_TYPE: book\n#+DOUBAN_REVIEW_UNKNOWN_FIELD: value\n"))
-    (douban-test--with-temp-file
-        ".org" contents
-      (should-error (douban--org-meta file) :type 'error))))
 
-(ert-deftest douban-test-org-ignores-keywords-in-source-blocks ()
-  (douban-test--with-temp-file
-      ".org"
-      (concat
-       "#+TITLE: 标题\n"
-       "#+DOUBAN_REVIEW:\n"
-       "#+DOUBAN_REVIEW_SUBJECT_ID: 123\n"
-       "#+DOUBAN_REVIEW_SUBJECT_TYPE: book\n"
-       "#+BEGIN_SRC org\n"
-       "#+DOUBAN_REVIEW_SUBJECT_ID: 999\n"
-       "#+DOUBAN_REVIEW_RATING:\n"
-       "#+DOUBAN_REVIEW_UNKNOWN_FIELD: ignored\n"
-       "#+END_SRC\n")
-    (let ((meta (douban--org-meta file)))
-      (should (equal (plist-get meta :subject-id) "123"))
-      (should-not (plist-get meta :rating)))))
 
 (ert-deftest douban-test-draft-inline-ranges-use-utf16 ()
   (let* ((raw
@@ -1289,9 +1193,7 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
   (skip-unless (executable-find "pandoc"))
   (dolist
       (case
-       '((".md" . "> 第一段\n>\n> 第二段\n")
-         (".org"
-          . "#+begin_quote\n第一段\n\n第二段\n#+end_quote\n")))
+       '((".md" . "> 第一段\n>\n> 第二段\n")))
     (douban-test--with-temp-file (car case) (cdr case)
       (pcase-let
           ((`(,raw ,count ,_directory)
@@ -1417,9 +1319,7 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
   (dolist
       (case
        '(("markdown+mark"
-          . "==第一段==\n\n==第二段==\n")
-         ("org"
-          . "!!第一段!!\n\n!!第二段!!\n")))
+          . "==第一段==\n\n==第二段==\n")))
     (let* ((html
             (douban--pandoc-to-html (car case) (cdr case)))
            (raw (douban--html-to-draft html))
@@ -1447,9 +1347,7 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
   (dolist
       (case
        '(("markdown+mark"
-          . "::: douban-highlight\n第一段\n\n第二段\n:::\n")
-         ("org"
-          . "#+begin_douban-highlight\n第一段\n\n第二段\n#+end_douban-highlight\n")))
+          . "::: douban-highlight\n第一段\n\n第二段\n:::\n")))
     (let* ((html
             (douban--pandoc-to-html (car case) (cdr case)))
            (raw (douban--html-to-draft html))
@@ -1466,8 +1364,7 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
   (skip-unless (executable-find "pandoc"))
   (dolist
       (case
-       '((".md" . "普通 ==高亮文字== 结尾。\n")
-         (".org" . "普通 !!高亮文字!! 结尾。\n")))
+       '((".md" . "普通 ==高亮文字== 结尾。\n")))
     (douban-test--with-temp-file
         (car case) (cdr case)
       (let* ((html (douban--source-html file))
@@ -1484,48 +1381,13 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
         (should (= (plist-get range :offset) 3))
         (should (= (plist-get range :length) 4))))))
 
-(ert-deftest douban-test-org-highlight-keeps-nested-formatting ()
-  (skip-unless (executable-find "pandoc"))
-  (douban-test--with-temp-file
-      ".org"
-      (concat
-       "普通 !!高亮 *粗体* 和 "
-       "[[https://example.com][链接]]!! 结尾。\n")
-    (let* ((raw
-            (douban--html-to-draft
-             (douban--source-html file)))
-           (block (aref (plist-get raw :blocks) 0))
-           (styles
-            (append (plist-get block :inlineStyleRanges) nil))
-           (mark
-            (cl-find-if
-             (lambda (range)
-               (equal (plist-get range :style) "MARK"))
-             styles))
-           (bold
-            (cl-find-if
-             (lambda (range)
-               (equal (plist-get range :style) "BOLD"))
-             styles))
-           (link
-            (aref (plist-get block :entityRanges) 0)))
-      (should (equal (plist-get block :text)
-                     "普通 高亮 粗体 和 链接 结尾。"))
-      (should (= (plist-get mark :offset) 3))
-      (should (= (plist-get mark :length) 10))
-      (should (= (plist-get bold :offset) 6))
-      (should (= (plist-get bold :length) 2))
-      (should (= (plist-get link :offset) 11))
-      (should (= (plist-get link :length) 2)))))
 
 (ert-deftest douban-test-highlight-block-keeps-inline-ranges-and-utf16 ()
   (skip-unless (executable-find "pandoc"))
   (dolist
       (case
        '(("markdown+mark"
-          . "==A😀**粗B**[链😀](https://example.com)==\n\n==第二段==\n")
-         ("org"
-          . "!!A😀*粗B*[[https://example.com][链😀]]!!\n\n!!第二段!!\n")))
+          . "==A😀**粗B**[链😀](https://example.com)==\n\n==第二段==\n")))
     (let* ((html
             (douban--pandoc-to-html (car case) (cdr case)))
            (raw (douban--html-to-draft html))
@@ -1582,11 +1444,7 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
         "<p><img src=\"photo.png\" alt=\"图片\"></p>"
         (concat
          "<p>文字<img src=\"photo.png\" alt=\"图片\"></p>")
-        (concat
-          "<p><a data-draft-node=\"block\" "
-          "data-draft-type=\"link-card\" "
-          "href=\"https://book.douban.com/subject/4908885/\">"
-          "局外人</a></p>")
+        (douban-test--card-html)
         "<p><span><div>嵌套区块</div></span></p>"))
     (should-error
      (douban--html-to-draft
@@ -1750,47 +1608,13 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
     (should (hash-table-p data))
     (should (= (hash-table-count data) 0))))
 
-(ert-deftest douban-test-org-center-keeps-alignment-and-inline-content ()
-  (skip-unless (executable-find "pandoc"))
-  (let* ((html
-          (douban--pandoc-to-html
-           "org"
-           (concat
-            "#+begin_center\n"
-            "甲 *粗体* [[https://example.com][链接]]\n"
-            "#+end_center\n")))
-         (raw (douban--html-to-draft html))
-         (blocks (plist-get raw :blocks))
-         (block (aref blocks 0))
-         (styles (append (plist-get block :inlineStyleRanges) nil))
-         (link-range (aref (plist-get block :entityRanges) 0))
-         (link
-          (gethash
-           (number-to-string (plist-get link-range :key))
-           (plist-get raw :entityMap))))
-    (should (= (length blocks) 1))
-    (should (equal (plist-get block :type) "unstyled"))
-    (should (equal (plist-get block :text) "甲 粗体 链接"))
-    (should (equal (plist-get block :data) '(:align "center")))
-    (should
-     (cl-find-if
-      (lambda (range)
-        (equal (plist-get range :style) "BOLD"))
-      styles))
-    (should (equal (plist-get link :type) "LINK"))
-    (should
-     (equal
-      (plist-get (plist-get link :data) :url)
-      "https://example.com"))))
 
 (ert-deftest douban-test-center-keeps-standalone-images-atomic ()
   (skip-unless (executable-find "pandoc"))
   (dolist
       (case
        '(("markdown+mark"
-          . "<div style=\"text-align: center\">\n\n![图注](photo.png)\n\n</div>\n")
-         ("org"
-          . "#+begin_center\n[[file:photo.png]]\n#+end_center\n")))
+          . "<div style=\"text-align: center\">\n\n![图注](photo.png)\n\n</div>\n")))
     (let* ((html (douban--pandoc-to-html (car case) (cdr case)))
            (raw (douban--html-to-draft html))
            (blocks (plist-get raw :blocks))
@@ -1918,31 +1742,6 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
       (should (equal (plist-get (aref blocks 0) :type) "atomic"))
       (should (equal (plist-get entity :type) "IMAGE")))))
 
-(ert-deftest douban-test-card-html-becomes-atomic-entity ()
-  (dolist
-      (url
-       '("https://example.com/articles/1?from=douban"
-         "http://example.net/articles/1"
-         "http://book.douban.com/subject/4908885/"))
-    (let* ((raw
-            (douban--html-to-draft
-             (douban-test--card-html url "链接标题")))
-           (blocks (plist-get raw :blocks))
-           (block (aref blocks 0))
-           (range (aref (plist-get block :entityRanges) 0))
-           (entity (douban-test--first-draft-entity raw))
-           (data (plist-get entity :data)))
-      (should (= (length blocks) 1))
-      (should (equal (plist-get block :type) "atomic"))
-      (should (equal (plist-get block :text) " "))
-      (should (= (plist-get range :offset) 0))
-      (should (= (plist-get range :length) 1))
-      (should (= (plist-get range :key) 0))
-      (should (equal (plist-get entity :type) "LINK"))
-      (should (equal (plist-get entity :mutability) "IMMUTABLE"))
-      (should (equal (plist-get data :url) url))
-      (should (equal (plist-get data :title) "链接标题"))
-      (should (equal (plist-get data :display) "atomic")))))
 
 (ert-deftest douban-test-search-users-uses-authenticated-current-endpoint ()
   (let ((cookies '(("ck" . "search-ck")
@@ -2068,16 +1867,7 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
               "<a href=\"https://www.douban.com/people/example/\" title=\"douban-user-mention:42\">&#x40;&#x5F20;&#x4E09;</a>")
              ("/tmp/review.md"
               "---\ntitle: 长评\ndouban:\n  review:\n    subject-id: '1'\n    subject-type: book\n---\n\n前后"
-              "<a href=\"https://www.douban.com/people/example/\" title=\"douban-user-mention:42\">&#x40;&#x5F20;&#x4E09;</a>")
-             ("/tmp/status.org"
-              "#+DOUBAN_STATUS:\n\n前后"
-              "@@html:<a href=\"https://www.douban.com/people/example/\" title=\"douban-user-mention:42\">&#x40;&#x5F20;&#x4E09;</a>@@")
-             ("/tmp/note.org"
-              "#+TITLE: 日记\n#+DOUBAN_NOTE:\n\n前后"
-              "@@html:<a href=\"https://www.douban.com/people/example/\" title=\"douban-user-mention:42\">&#x40;&#x5F20;&#x4E09;</a>@@")
-             ("/tmp/review.org"
-              "#+TITLE: 长评\n#+DOUBAN_REVIEW:\n#+DOUBAN_REVIEW_SUBJECT_ID: 1\n#+DOUBAN_REVIEW_SUBJECT_TYPE: book\n\n前后"
-              "@@html:<a href=\"https://www.douban.com/people/example/\" title=\"douban-user-mention:42\">&#x40;&#x5F20;&#x4E09;</a>@@")))
+              "<a href=\"https://www.douban.com/people/example/\" title=\"douban-user-mention:42\">&#x40;&#x5F20;&#x4E09;</a>")))
         (with-temp-buffer
           (setq buffer-file-name (nth 0 case))
           (insert (nth 1 case))
@@ -2087,8 +1877,8 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
            (string-suffix-p
             (concat "前" (nth 2 case) "后")
             (buffer-string))))))
-    (should (= searches 6))
-    (should (= selections 6))))
+    (should (= searches 3))
+    (should (= selections 3))))
 
 (ert-deftest douban-test-markdown-user-mention-completion-at-point ()
   (let ((user
@@ -2328,26 +2118,10 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
      (eq
       douban--platform-completion-cache
       'platform-after-disable))
-    (should
-     (eq
-      douban--user-mention-completion-cache
-      'mention-after-disable)))
-  (with-temp-buffer
-    (setq buffer-file-name "/tmp/status.org")
-    (setq major-mode 'org-mode)
-    (insert "#+DOUBAN_STATUS:\n\n正文")
-    (douban-mode 1)
-    (should douban-mode)
-    (should
-     (memq
-      #'douban-metadata-completion-at-point
-      completion-at-point-functions))
-    (should-not
-     (memq
-      #'douban-user-mention-completion-at-point
-      completion-at-point-functions))
-    (douban-mode -1)
-    (should-not douban-mode)))
+      (should
+       (eq
+        douban--user-mention-completion-cache
+        'mention-after-disable))))
 
 (ert-deftest douban-test-douban-mode-requires-matching-source-mode-and-file ()
   (dolist
@@ -2379,12 +2153,9 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
             :id "42"
             :name name
             :url "https://www.douban.com/people/example/")))
-      (dolist (format '(markdown org))
-        (let* ((source (douban--user-mention-source format user))
-               (html
-                (douban--pandoc-to-html
-                 (if (eq format 'markdown) "markdown+mark" "org")
-                 source))
+      (let* ((source (douban--user-mention-source user))
+             (html
+              (douban--pandoc-to-html "markdown+mark" source))
                (raw (douban--html-to-draft html))
                (entity (douban-test--first-draft-entity raw)))
           (should
@@ -2399,7 +2170,7 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
           (should
            (equal
             (plist-get (plist-get entity :data) :id)
-            "42")))))))
+            "42"))))))
 
 (ert-deftest douban-test-review-publish-preserves-user-mention ()
   (let ((html
@@ -2613,26 +2384,7 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
         #'douban--validate-draft)
        :type 'user-error))))
 
-(ert-deftest douban-test-card-html-rejects-invalid-placement-and-url ()
-  (dolist
-      (html
-       (list
-        (format
-         "<p>前%s后</p>"
-         (douban-test--card-html))
-        (douban-test--card-html "../subject/4908885/")
-        (douban-test--card-html "//example.com/articles/1")
-        (douban-test--card-html "ftp://example.com/articles/1")
-        (douban-test--card-html "https:///missing-host")))
-    (should-error (douban--html-to-draft html) :type 'user-error)))
 
-(ert-deftest douban-test-card-only-draft-is-nonempty-content ()
-  (let ((raw
-         (douban--html-to-draft
-          (douban-test--card-html))))
-    ;; 原子卡片不计入长评字数，但应足以构成日记或广播正文。
-    (should (= (douban--draft-character-count raw) 0))
-    (should (= (douban--validate-content-draft raw "日记") 0))))
 
 (ert-deftest douban-test-draft-entity-occurrences-ignore-orphans ()
   (let* ((referenced
@@ -2727,206 +2479,10 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
         (should-error (funcall form) :type 'error)))
     (should-not effects)))
 
-(ert-deftest douban-test-rewrite-draft-cards-follows-first-reference-order ()
-  (cl-labels
-      ((link
-        (name)
-        (list
-         :type "LINK"
-         :mutability "IMMUTABLE"
-         :data
-         (list
-          :url (format "https://example.org/%s" name)
-          :display "atomic"))))
-    (let* ((raw
-            (douban-test--entity-raw
-             `(("1" . ,(link "one"))
-               ("9" . ,(link "orphan"))
-               ("0" . ,(link "zero"))
-               ("2" . ,(link "two")))
-             '("2" "0" "2")
-             '("1")))
-           requests)
-      (cl-letf
-          (((symbol-function 'douban--resolve-card)
-            (lambda (url)
-              (push url requests)
-              (list
-               :type "LINK"
-               :data
-               (list
-                :title url
-                :url url
-                :display "atomic")))))
-        (should (eq (douban--rewrite-draft-cards raw) raw)))
-      (should
-       (equal
-        (nreverse requests)
-        '("https://example.org/two"
-          "https://example.org/zero"
-          "https://example.org/one"))))))
 
-(ert-deftest douban-test-rewrite-draft-cards-resolves-and-caches-url ()
-  (let* ((source-url "http://book.douban.com/subject/4908885/")
-         (canonical-url
-          "https://book.douban.com/subject/4908885/")
-         (raw
-          (douban--html-to-draft
-           (concat
-            (douban-test--card-html source-url "源稿标题")
-            (douban-test--card-html source-url "另一个源稿标题"))))
-         (requests 0)
-         (response-data
-          '(:id "4908885"
-            :type "book"
-            :title "局外人"
-            :url "https://book.douban.com/subject/4908885/"
-            :cover
-            "https://img9.doubanio.com/view/subject/l/public/s4468484.jpg"
-            :summary "[法] 阿尔贝·加缪 / 2010 / 上海译文出版社"
-            :rating (:max 10.0 :value 9.1)
-            :api-only "server-value")))
-    (cl-letf
-        (((symbol-function 'douban--plz-request)
-          (lambda (method request-url &rest options)
-            (cl-incf requests)
-            (should (equal method "GET"))
-            (should
-             (string-match-p
-              "/rexxar/api/v2/get_url_info?"
-              request-url))
-            (should (string-match-p "[?&]need_card=1\\(?:&\\|\\'\\)"
-                                    request-url))
-            (should (string-match-p "[?&]editor_type=group\\(?:&\\|\\'\\)"
-                                    request-url))
-            (should
-             (string-match-p
-              (regexp-quote (url-hexify-string source-url))
-              request-url))
-            (should-not
-             (cl-find-if
-              (lambda (header)
-                (string-equal
-                 (downcase (format "%s" (car header)))
-                 "cookie"))
-              (plist-get options :headers)))
-            (make-plz-response
-             :status 200
-             :body
-             (json-encode
-              (list :type "SUBJECT" :data response-data))))))
-      (should (eq (douban--rewrite-draft-cards raw) raw)))
-    (should (= requests 1))
-    (should (= (hash-table-count (plist-get raw :entityMap)) 2))
-    (maphash
-     (lambda (_key entity)
-       (let ((data (plist-get entity :data)))
-         (should (equal (plist-get entity :type) "SUBJECT"))
-         (should (equal (plist-get data :id) "4908885"))
-         (should (equal (plist-get data :type) "book"))
-         (should (equal (plist-get data :title) "局外人"))
-         (should (equal (plist-get data :url) canonical-url))
-         (should
-          (equal
-           (plist-get data :cover)
-           (plist-get response-data :cover)))
-         (should
-          (equal
-           (plist-get data :summary)
-           (plist-get response-data :summary)))
-         (should
-          (= (plist-get (plist-get data :rating) :value) 9.1))
-         (should (equal (plist-get data :api-only) "server-value"))
-         (should (equal (plist-get data :display) "atomic"))
-         (dolist (alias '(:caption :cover_url :card_subtitle))
-           (should-not (plist-member data alias)))
-         (should
-          (equal
-           data
-           (append response-data '(:display "atomic"))))))
-     (plist-get raw :entityMap))))
 
-(ert-deftest douban-test-rewrite-draft-cards-keeps-link-result ()
-  (let* ((source-url "http://example.com/articles/1")
-         (raw
-          (douban--html-to-draft
-           (douban-test--card-html source-url "源稿标题")))
-         (response-data
-          '(:title "服务端标题"
-            :url "https://example.com/articles/1"
-            :cover_url "https://example.com/cover.jpg"
-            :card_subtitle "服务端摘要"
-            :api-only "server-value")))
-    (cl-letf
-        (((symbol-function 'douban--plz-request)
-          (lambda (&rest _arguments)
-            (make-plz-response
-             :status 200
-             :body
-             (json-encode
-              (list :type "LINK" :data response-data))))))
-      (should (eq (douban--rewrite-draft-cards raw) raw)))
-    (let* ((entity (douban-test--first-draft-entity raw))
-           (data (plist-get entity :data)))
-      (should (equal (plist-get entity :type) "LINK"))
-      (should (equal (plist-get entity :mutability) "IMMUTABLE"))
-      (should
-       (equal
-        data
-        (append response-data '(:display "atomic")))))))
 
-(ert-deftest douban-test-rewrite-draft-cards-ignores-ordinary-links ()
-  (dolist
-      (url
-       '("https://book.douban.com/subject/4908885/"
-         "https://example.com/articles/1"))
-    (let* ((raw
-            (douban--html-to-draft
-             (format "<p><a href=\"%s\">普通链接</a></p>" url)))
-           (before (copy-tree raw)))
-      (cl-letf
-          (((symbol-function 'douban--plz-request)
-            (lambda (&rest _arguments)
-              (ert-fail "普通链接不得调用卡片解析接口"))))
-        (should (eq (douban--rewrite-draft-cards raw) raw)))
-      (should (equal raw before))
-      (let* ((entity (douban-test--first-draft-entity raw))
-             (data (plist-get entity :data)))
-        (should (equal (plist-get entity :type) "LINK"))
-        (should (equal (plist-get entity :mutability) "MUTABLE"))
-        (should (equal (plist-get data :url) url))
-        (should-not (plist-member data :display))))))
 
-(ert-deftest douban-test-rewrite-draft-cards-rejects-invalid-result ()
-  (dolist
-      (result
-       '((:type "URL"
-          :data (:url "https://example.com/articles/1"))
-         (:type "LINK"
-          :data (:title "相对地址" :url "../articles/1"))
-         (:type "LINK"
-          :data
-          (:title "不安全封面"
-           :url "https://example.com/articles/1"
-           :cover_url "http://example.com/cover.jpg"))
-         (:type "SUBJECT"
-          :data
-          (:id "4908885"
-           :type "book"
-           :title "局外人"
-           :url "http://book.douban.com/subject/4908885/"))))
-    (let ((raw
-           (douban--html-to-draft
-            (douban-test--card-html))))
-      (cl-letf
-          (((symbol-function 'douban--plz-request)
-            (lambda (&rest _arguments)
-              (make-plz-response
-               :status 200
-               :body (json-encode result)))))
-        (should-error
-         (douban--rewrite-draft-cards raw)
-         :type 'error)))))
 
 (ert-deftest douban-test-empty-html-still-has-one-block ()
   (let* ((raw (douban--html-to-draft ""))
@@ -4533,70 +4089,7 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
      (douban--md-toc-depth frontmatter)
      :type 'error)))
 
-(ert-deftest douban-test-org-toc-honors-position-and-depth ()
-  (skip-unless (executable-find "pandoc"))
-  (douban-test--with-temp-file
-      ".org"
-      (concat
-       "#+TITLE: Org 目录测试\n"
-       "#+DOUBAN_NOTE:\n\n"
-       "序言。\n\n"
-       "#+TOC: headlines 2\n\n"
-       "* 第一章\n正文。\n"
-       "** 第二节\n内容。\n"
-       "*** 第三层\n仍在正文。\n")
-    (let* ((raw
-            (douban--html-to-draft
-             (douban--source-html file)))
-           (blocks (append (plist-get raw :blocks) nil))
-           (first (nth 2 blocks))
-           (second (nth 3 blocks)))
-      (should
-       (equal
-        (mapcar
-         (lambda (block) (plist-get block :text))
-         blocks)
-        '("序言。" "目录" "第一章" "第二节"
-          "第一章" "正文。" "第二节" "内容。"
-          "第三层" "仍在正文。")))
-      (should
-       (equal
-        (mapcar
-         (lambda (block) (plist-get block :depth))
-         (list first second))
-        '(0 1)))
-      (should
-       (equal
-        (mapcar
-         (lambda (block)
-           (plist-get
-            (plist-get
-             (douban-test--block-first-entity raw block)
-             :data)
-            :url))
-         (list first second))
-        '("#第一章" "#第二节"))))))
 
-(ert-deftest douban-test-org-toc-rejects-invalid-or-nested-markers ()
-  (skip-unless (executable-find "pandoc"))
-  (dolist
-      (contents
-       '("#+TOC: tables\n* 标题\n"
-         "#+TOC: headlines 4\n* 标题\n"
-         "#+TOC: headlines 2 local\n* 标题\n"
-         "#+TOC: headlines 2\n#+TOC: headlines 2\n* 标题\n"))
-    (douban-test--with-temp-file
-        ".org" contents
-      (should-error (douban--source-html file) :type 'error)))
-  (dolist
-      (contents
-       '("#+begin_quote\n#+TOC: headlines 2\n#+end_quote\n* 标题\n"
-         "#+begin_src org\n#+TOC: headlines 2\n#+end_src\n* 标题\n"))
-    (douban-test--with-temp-file ".org" contents
-      (should-not
-       (string-match-p
-        (regexp-quote douban--toc-marker-attribute)
-        (douban--source-html file))))))
 
 (ert-deftest douban-test-fragment-links-rewrite-to-visible-heading-text ()
   (skip-unless (executable-find "pandoc"))
@@ -4604,12 +4097,7 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
       (case
        '((".md"
           . "## 展示标题 {#source-target}\n\n\
-[跳转](#source-target)和[外链](https://example.org/page#source-target)。\n")
-         (".org"
-          . "* 展示标题\n\
-:PROPERTIES:\n:CUSTOM_ID: source-target\n:END:\n\n\
-[[#source-target][跳转]]和\
-[[https://example.org/page#source-target][外链]]。\n")))
+[跳转](#source-target)和[外链](https://example.org/page#source-target)。\n")))
     (douban-test--with-temp-file
         (car case) (cdr case)
       (let* ((raw
@@ -4748,108 +4236,7 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
           :blocks))
         3))))
 
-(ert-deftest douban-test-org-source-conversion-via-pandoc ()
-  (skip-unless (executable-find "pandoc"))
-  (douban-test--with-temp-file
-   ".org"
-   (concat
-    "#+TITLE: Org 转换测试\n"
-    "#+DOUBAN_REVIEW:\n"
-    "#+DOUBAN_REVIEW_SUBJECT_ID: 123\n"
-    "#+DOUBAN_REVIEW_SUBJECT_TYPE: book\n"
-    "\n"
-    "* 标题\n\n"
-    (douban-test--long-text)
-    "\n")
-   (let* ((html (douban--source-html file))
-          (raw (douban--html-to-draft html)))
-     (should
-      (equal
-       (plist-get (aref (plist-get raw :blocks) 0) :type)
-       "header-two"))
-     (should
-      (>=
-       (douban--draft-character-count raw)
-       douban-minimum-review-length)))))
 
-(ert-deftest douban-test-pandoc-task-lists-degrade-to-text-markers ()
-  (skip-unless (executable-find "pandoc"))
-  (dolist
-      (case
-       '(("markdown+mark"
-          . "- [x] 已完成\n- [ ] 未完成\n")
-         ("org"
-          . "- [X] 已完成\n- [ ] 未完成\n")))
-    (let* ((html (douban--pandoc-to-html (car case) (cdr case)))
-           (raw (douban--html-to-draft html))
-           (blocks (append (plist-get raw :blocks) nil)))
-      (should (= (length blocks) 2))
-      (should
-       (equal
-        (mapcar
-         (lambda (block) (plist-get block :type))
-         blocks)
-        '("unordered-list-item" "unordered-list-item")))
-      (should
-       (equal
-        (mapcar
-         (lambda (block) (plist-get block :text))
-         blocks)
-        '("☑ 已完成" "☐ 未完成")))
-      (should (= (hash-table-count (plist-get raw :entityMap)) 0)))))
-
-(ert-deftest douban-test-pandoc-link-card-markers ()
-  (skip-unless (executable-find "pandoc"))
-  (dolist
-      (url
-       '("https://example.com/articles/1"
-         "http://example.net/articles/1"
-         "http://book.douban.com/subject/4908885/"))
-    (let (outputs)
-      (dolist
-          (case
-           `(("gfm"
-              . ,(format "[链接标题](%s \"card\")" url))
-             ("org"
-              . ,(format
-                  (concat
-                   "#+ATTR_DOUBAN: :type link-card\n"
-                   "[[%s][链接标题]]")
-                  url))))
-        (let* ((html
-                (douban--pandoc-to-html (car case) (cdr case)))
-               (document
-                (douban--parse-html
-                 (concat "<html><body>" html "</body></html>")))
-               (body (car (dom-by-tag document 'body)))
-               (elements
-                (cl-remove-if-not #'consp (dom-children body)))
-               (anchor (car elements))
-               (raw (douban--html-to-draft html))
-               (entity (douban-test--first-draft-entity raw)))
-          (push (string-trim html) outputs)
-          (should (= (length elements) 1))
-          (should (eq (dom-tag anchor) 'a))
-          (should (equal (dom-attr anchor 'href) url))
-          (should
-           (equal (dom-attr anchor 'data-draft-node) "block"))
-          (should
-           (equal (dom-attr anchor 'data-draft-type) "link-card"))
-          (should
-           (equal
-            (dom-attr anchor 'data-draft-title)
-            "链接标题"))
-          (should
-           (equal (dom-attr anchor 'data-draft-cover) ""))
-          (should-not (dom-attr anchor 'title))
-          (should-not
-           (dom-attr anchor 'data-douban-subject-card))
-          (should (equal (plist-get entity :type) "LINK"))
-          (should
-           (equal
-            (plist-get (plist-get entity :data) :title)
-            "链接标题"))))
-      (should (apply #'equal outputs)))))
 
 (ert-deftest douban-test-pandoc-keeps-link-ordinary-before-resolution ()
   (skip-unless (executable-find "pandoc"))
@@ -4870,9 +4257,7 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
     (dolist
         (case
          '(("gfm"
-            . "正文 [普通文字](https://book.douban.com/subject/4908885/) 后文")
-           ("org"
-            . "正文 [[https://book.douban.com/subject/4908885/][普通文字]] 后文")))
+            . "正文 [普通文字](https://book.douban.com/subject/4908885/) 后文")))
       (let* ((html (douban--pandoc-to-html (car case) (cdr case)))
              (raw (douban--html-to-draft html))
              (before (copy-tree raw)))
@@ -4892,31 +4277,8 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
           (should (equal (plist-get data :url) url))
           (should-not (plist-member data :display)))))))
 
-(ert-deftest douban-test-pandoc-rejects-invalid-link-card-markers ()
-  (skip-unless (executable-find "pandoc"))
-  (let ((html
-         (douban--pandoc-to-html
-          "gfm"
-          "前 [局外人](https://book.douban.com/subject/4908885/ \"card\") 后")))
-    (should-not
-     (string-match-p "data-draft-type=\"link-card\"" html)))
-  (dolist
-      (case
-       '(("gfm"
-          . "[相对地址](../subject/4908885/ \"card\")")
-         ("gfm" . "[FTP](ftp://example.com/articles/1 \"card\")")
-         ("gfm" . "[无主机](https:///articles/1 \"card\")")))
-    (should-error
-     (douban--html-to-draft
-      (douban--pandoc-to-html (car case) (cdr case)))
-     :type 'user-error))
-  (should-error
-   (douban--pandoc-to-html
-    "org"
-    "#+ATTR_DOUBAN: :type link-card\n这里不是独立链接段落")
-   :type 'error))
 
-(ert-deftest douban-test-pandoc-card-filter-always-deletes-temp-file ()
+(ert-deftest douban-test-pandoc-highlight-filter-always-deletes-temp-file ()
   (dolist (fail '(nil t))
     (let (filters)
       (cl-letf
@@ -4940,26 +4302,22 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
                 "<p>正文</p>"))))
         (if fail
             (should-error
-             (douban--pandoc-to-html "gfm" "正文")
+             (douban--pandoc-to-html "markdown+mark" "正文")
              :type 'error)
           (should
            (equal
-            (douban--pandoc-to-html "gfm" "正文")
+            (douban--pandoc-to-html "markdown+mark" "正文")
             "<p>正文</p>"))))
       (should (= (length filters) 1))
       (dolist (filter filters)
         (should-not (file-exists-p filter))))))
 
-(ert-deftest douban-test-pandoc-toc-filter-only-for-org ()
+(ert-deftest douban-test-pandoc-filters-follow-markdown-reader ()
   (dolist
       (case
-       '(("gfm"
-          . ("douban-card-"))
+       '(("gfm" . nil)
          ("markdown+mark"
-          . ("douban-card-" "douban-highlight-block-"))
-         ("org"
-          . ("douban-card-" "douban-toc-"
-             "douban-org-highlight-" "douban-highlight-block-"))))
+          . ("douban-highlight-block-"))))
     (let (filter-names)
       (cl-letf
           (((symbol-function 'douban--shell-convert)
@@ -4983,35 +4341,21 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
          (should (string-prefix-p prefix name)))
        filter-names (cdr case)))))
 
-(ert-deftest douban-test-pandoc-filter-creation-failure-cleans-earlier-files ()
-  (let ((real-make-temp-file
-         (symbol-function 'make-temp-file))
-        (calls 0)
-        created
-        shell-called)
+(ert-deftest douban-test-pandoc-filter-creation-failure-skips-shell ()
+  (let (shell-called)
     (cl-letf
         (((symbol-function 'make-temp-file)
-          (lambda (&rest arguments)
-            (cl-incf calls)
-            (when (= calls 2)
-              (error "模拟 filter 创建失败"))
-            (let ((file
-                   (apply real-make-temp-file arguments)))
-              (push file created)
-              file)))
+          (lambda (&rest _arguments)
+            (error "模拟 filter 创建失败")))
          ((symbol-function 'douban--shell-convert)
           (lambda (&rest _arguments)
             (setq shell-called t)
             (ert-fail
              "filter 尚未全部创建时不得调用 Pandoc"))))
       (should-error
-       (douban--pandoc-to-html "org" "正文")
+       (douban--pandoc-to-html "markdown+mark" "正文")
        :type 'error))
-    (should (= calls 2))
-    (should (= (length created) 1))
-    (should-not shell-called)
-    (dolist (file created)
-      (should-not (file-exists-p file)))))
+    (should-not shell-called)))
 
 (ert-deftest douban-test-publish-file-checkpoints-created-id ()
   (douban-test--with-temp-file
@@ -5813,17 +5157,6 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
         (plist-get (douban--read-meta file) :kind)
         (intern kind))))))
 
-(ert-deftest douban-test-org-present-but-empty-id-is-invalid ()
-  (dolist
-      (contents
-       '("#+DOUBAN_REVIEW:\n#+DOUBAN_REVIEW_SUBJECT_ID: 1\n#+DOUBAN_REVIEW_SUBJECT_TYPE: book\n#+DOUBAN_REVIEW_ID:\n"
-         "#+DOUBAN_NOTE:\n#+DOUBAN_NOTE_ID:\n"
-         "#+DOUBAN_STATUS:\n#+DOUBAN_STATUS_ID:\n"))
-    (douban-test--with-temp-file
-        ".org" contents
-      (should-error
-       (douban--read-meta file)
-       :type 'error))))
 
 (ert-deftest douban-test-anthology-metadata-only-belongs-to-status ()
   (let ((status
@@ -6225,56 +5558,6 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
       (when (buffer-live-p source)
         (kill-buffer source)))))
 
-(ert-deftest douban-test-org-anthology-completion-uses-name-and-id ()
-  (let ((anthology
-         '(:id "52" :title "读书笔记" :items-count 6)))
-    (with-temp-buffer
-      (setq buffer-file-name "/tmp/status.org")
-      (org-mode)
-      (insert
-       (concat
-        "#+DOUBAN_STATUS:\n"
-        "#+DOUBAN_STATUS_ANTHOLOGY_ID:\n\n"
-        "广播正文\n"))
-      (goto-char (point-min))
-      (search-forward "ANTHOLOGY_ID:")
-      (cl-letf
-          (((symbol-function 'douban--current-user-id)
-            (lambda () "current-user"))
-           ((symbol-function
-             'douban--read-browser-cookies)
-            (lambda (&rest _arguments) nil))
-           ((symbol-function 'douban--anthologies)
-            (lambda (&rest _arguments)
-              (list anthology))))
-        (let* ((capf
-                (douban-metadata-completion-at-point))
-               (start (nth 0 capf))
-               (end (nth 1 capf))
-               (table (nth 2 capf))
-               (exit-function
-                (plist-get
-                 (nthcdr 3 capf)
-                 :exit-function)))
-          (should
-           (equal
-            (all-completions "" table)
-            '("读书笔记")))
-          (delete-region start end)
-          (goto-char start)
-          (insert "读书笔记")
-          (funcall
-           exit-function "读书笔记" 'finished)
-          (should
-           (string-match-p
-            "^#\\+DOUBAN_STATUS_ANTHOLOGY_ID: 52$"
-            (buffer-string)))
-          (should
-           (equal
-            (plist-get
-             (douban--current-buffer-meta)
-             :anthology-id)
-            "52")))))))
 
 (ert-deftest douban-test-anthology-completion-caches-empty-list ()
   (with-temp-buffer
@@ -6367,14 +5650,9 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
       (case
        '(("/tmp/status.md"
           "---\ndouban:\n  status:\n    anthology-id:\n---\n"
-          "anthology-id:")
-         ("/tmp/status.org"
-          "#+DOUBAN_STATUS:\n#+DOUBAN_STATUS_ANTHOLOGY_ID:\n"
-          "ANTHOLOGY_ID:")))
+          "anthology-id:")))
     (with-temp-buffer
       (setq buffer-file-name (nth 0 case))
-      (when (string-suffix-p ".org" buffer-file-name)
-        (org-mode))
       (insert (nth 1 case))
       (goto-char (point-min))
       (search-forward (nth 2 case))
@@ -6400,33 +5678,7 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
       (goto-char (point-min))
       (search-forward "anthology-id:")
       (should-not
-       (douban-metadata-completion-at-point))))
-  (with-temp-buffer
-    (setq buffer-file-name "/tmp/review.org")
-    (org-mode)
-    (insert
-     (concat
-      "#+DOUBAN_REVIEW:\n"
-      "#+DOUBAN_REVIEW_SUBJECT_ID: 1\n"
-      "#+DOUBAN_REVIEW_SUBJECT_TYPE: book\n"
-      "#+DOUBAN_STATUS_ANTHOLOGY_ID:\n"))
-    (goto-char (point-min))
-    (search-forward "ANTHOLOGY_ID:")
-    (should-not
-     (douban-metadata-completion-at-point)))
-  (with-temp-buffer
-    (setq buffer-file-name "/tmp/status.org")
-    (org-mode)
-    (insert
-     (concat
-      "#+DOUBAN_STATUS:\n"
-      "#+BEGIN_SRC text\n"
-      "#+DOUBAN_STATUS_ANTHOLOGY_ID:\n"
-      "#+END_SRC\n"))
-    (goto-char (point-min))
-    (search-forward "ANTHOLOGY_ID:")
-    (should-not
-     (douban-metadata-completion-at-point))))
+       (douban-metadata-completion-at-point)))))
 
 (ert-deftest douban-test-published-status-can-complete-anthology ()
   (with-temp-buffer
@@ -6450,11 +5702,7 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
   (should-not
    (and
     (boundp 'markdown-mode-hook)
-    (memq #'douban-mode (symbol-value 'markdown-mode-hook))))
-  (should-not
-   (and
-    (boundp 'org-mode-hook)
-    (memq #'douban-mode (symbol-value 'org-mode-hook)))))
+    (memq #'douban-mode (symbol-value 'markdown-mode-hook)))))
 
 (ert-deftest douban-test-douban-publish-does-not-require-douban-mode ()
   (with-temp-buffer
@@ -6577,31 +5825,14 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
          ("/tmp/status.md"
           "---\ndouban:\n  status:\n    e\n---\n"
           "    e" "original:")
-         ("/tmp/review.org"
-          "#+DOUBAN_REVIEW:\n#+DOUBAN_REVIEW_E\n"
-          "DOUBAN_REVIEW_E" "DOUBAN_REVIEW_ORIGINAL:")
-         ("/tmp/annotation.org"
-          "#+DOUBAN_ANNOTATION:\n#+DOUBAN_ANNOTATION_E\n"
-          "DOUBAN_ANNOTATION_E" "DOUBAN_ANNOTATION_ORIGINAL:")
-         ("/tmp/status.org"
-          "#+DOUBAN_STATUS:\n#+DOUBAN_STATUS_E\n"
-          "DOUBAN_STATUS_E" "DOUBAN_STATUS_ORIGINAL:")
          ("/tmp/annotation.md"
           "---\ndouban:\n  annotation:\n    e\n---\n"
           "    e" "reply-limit:")
          ("/tmp/status.md"
           "---\ndouban:\n  status:\n    e\n---\n"
-          "    e" "reply-limit:")
-         ("/tmp/annotation.org"
-          "#+DOUBAN_ANNOTATION:\n#+DOUBAN_ANNOTATION_E\n"
-          "DOUBAN_ANNOTATION_E" "DOUBAN_ANNOTATION_REPLY_LIMIT:")
-         ("/tmp/status.org"
-          "#+DOUBAN_STATUS:\n#+DOUBAN_STATUS_E\n"
-          "DOUBAN_STATUS_E" "DOUBAN_STATUS_REPLY_LIMIT:")))
+          "    e" "reply-limit:")))
     (with-temp-buffer
       (setq buffer-file-name (nth 0 case))
-      (when (string-suffix-p ".org" buffer-file-name)
-        (org-mode))
       (insert (nth 1 case))
       (goto-char (point-min))
       (search-forward (nth 2 case))
@@ -6691,34 +5922,6 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
             (all-completions "" (nth 2 capf))))
           (should (= scans 1)))))))
 
-(ert-deftest douban-test-org-metadata-capf-parses-source-once ()
-  (with-temp-buffer
-    (setq buffer-file-name "/tmp/review.org")
-    (org-mode)
-    (insert
-     (concat
-      "#+DOUBAN_REVIEW:\n"
-      "#+DOUBAN_REVIEW_SUBJECT_ID: 42\n"
-      "#+DOUBAN_REVIEW_SUBJECT_TYPE: game\n"
-      "#+DOUBAN_REVIEW_R\n"))
-    (goto-char (point-min))
-    (search-forward "DOUBAN_REVIEW_R")
-    (let ((parser
-           (symbol-function 'org-element-parse-buffer))
-          (parses 0))
-      (cl-letf
-          (((symbol-function 'org-element-parse-buffer)
-            (lambda (&rest arguments)
-              (cl-incf parses)
-              (apply parser arguments))))
-        (let ((capf
-               (douban-metadata-completion-at-point)))
-          (should capf)
-          (should
-           (member
-            "DOUBAN_REVIEW_RTYPE:"
-            (all-completions "" (nth 2 capf))))
-          (should (= parses 1)))))))
 
 (ert-deftest douban-test-metadata-capf-rebuilds-index-after-edit ()
   (dolist
@@ -6728,17 +5931,9 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
           "    r"
           "subject-type: book"
           "subject-type: game"
-          "rtype:")
-         ("/tmp/review.org"
-          "#+DOUBAN_REVIEW:\n#+DOUBAN_REVIEW_SUBJECT_ID: 42\n#+DOUBAN_REVIEW_SUBJECT_TYPE: book\n#+DOUBAN_REVIEW_R\n"
-          "DOUBAN_REVIEW_R"
-          "SUBJECT_TYPE: book"
-          "SUBJECT_TYPE: game"
-          "DOUBAN_REVIEW_RTYPE:")))
+          "rtype:")))
     (with-temp-buffer
       (setq buffer-file-name (nth 0 case))
-      (when (string-suffix-p ".org" buffer-file-name)
-        (org-mode))
       (insert (nth 1 case))
       (goto-char (point-min))
       (search-forward (nth 2 case))
@@ -6763,57 +5958,6 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
           2
           (douban-metadata-completion-at-point))))))))
 
-(ert-deftest douban-test-org-metadata-field-completion-preserves-colon ()
-  (with-temp-buffer
-    (setq buffer-file-name "/tmp/undecided.org")
-    (org-mode)
-    (insert "#+DOUBAN_ST\n")
-    (goto-char (point-min))
-    (search-forward "DOUBAN_ST")
-    (should
-     (equal
-      (all-completions
-       ""
-       (nth 2
-            (douban-metadata-completion-at-point)))
-      '("DOUBAN_REVIEW:" "DOUBAN_NOTE:" "DOUBAN_ANNOTATION:"
-        "DOUBAN_STATUS:"))))
-  (with-temp-buffer
-    (setq buffer-file-name "/tmp/status.org")
-    (org-mode)
-    (insert
-     (concat
-      "#+DOUBAN_STATUS:\n"
-      "#+DOUBAN_STATUS_EXP\n"))
-    (goto-char (point-min))
-    (search-forward "DOUBAN_STATUS_EXP")
-    (let* ((capf (douban-metadata-completion-at-point))
-           (candidates (all-completions "" (nth 2 capf))))
-      (should capf)
-      (should
-       (member "DOUBAN_STATUS_EXPLANATION_TYPES:" candidates))
-      (should-not
-       (member "DOUBAN_STATUS_ORIGINAL:" candidates))
-      (should-not
-       (member "DOUBAN_REVIEW_SUBJECT_TYPE:" candidates))))
-  (with-temp-buffer
-    (setq buffer-file-name "/tmp/status.org")
-    (org-mode)
-    (insert
-     (concat
-      "#+DOUBAN_STATUS:\n"
-      "#+DOUBAN_STATUS_EXPLANATION_TYPES:\n"))
-    (goto-char (point-min))
-    (search-forward "DOUBAN_STATUS_EXPLANATION_TYPES")
-    (let ((candidates
-           (all-completions
-            ""
-            (nth 2
-                 (douban-metadata-completion-at-point)))))
-      (should
-       (member "DOUBAN_STATUS_EXPLANATION_TYPES" candidates))
-      (should-not
-       (member "DOUBAN_STATUS_EXPLANATION_TYPES:" candidates)))))
 
 (ert-deftest douban-test-explanation-types-is-strict-single-source-metadata ()
   (dolist
@@ -6855,13 +5999,7 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
           "ai-generated")
          (".md"
           "---\ndouban:\n  status:\n    explanation-types: repost\n---\n"
-          "repost")
-         (".org"
-          "#+DOUBAN_REVIEW:\n#+DOUBAN_REVIEW_SUBJECT_ID: 1\n#+DOUBAN_REVIEW_SUBJECT_TYPE: book\n#+DOUBAN_REVIEW_EXPLANATION_TYPES: fictional\n"
-          "fictional")
-         (".org"
-          "#+DOUBAN_STATUS:\n#+DOUBAN_STATUS_EXPLANATION_TYPES: marketing\n"
-          "marketing")))
+          "repost")))
     (douban-test--with-temp-file
         (nth 0 case) (nth 1 case)
       (let ((meta (douban--read-meta file)))
@@ -6881,11 +6019,7 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
        '((".md"
           "---\ndouban:\n  review:\n    subject-id: '1'\n    subject-type: book\n    explanation-types: [ai-generated, repost]\n---\n")
          (".md"
-          "---\ndouban:\n  status:\n    explanation-types: [ai-generated, repost]\n---\n")
-         (".org"
-          "#+DOUBAN_REVIEW:\n#+DOUBAN_REVIEW_SUBJECT_ID: 1\n#+DOUBAN_REVIEW_SUBJECT_TYPE: book\n#+DOUBAN_REVIEW_EXPLANATION_TYPES: ai-generated,repost\n")
-         (".org"
-          "#+DOUBAN_STATUS:\n#+DOUBAN_STATUS_EXPLANATION_TYPES: ai-generated,repost\n")))
+          "---\ndouban:\n  status:\n    explanation-types: [ai-generated, repost]\n---\n")))
     (douban-test--with-temp-file
         (car case) (cadr case)
       (should-error
@@ -7003,41 +6137,6 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
         (all-completions "" (nth 2 capf))
         '("book" "movie" "tv" "music" "game"))))))
 
-(ert-deftest douban-test-org-metadata-value-completion-maps-game-type ()
-  (with-temp-buffer
-    (setq buffer-file-name "/tmp/review.org")
-    (org-mode)
-    (insert
-     (concat
-      "#+DOUBAN_REVIEW:\n"
-      "#+DOUBAN_REVIEW_SUBJECT_ID: 42\n"
-      "#+DOUBAN_REVIEW_SUBJECT_TYPE: game\n"
-      "#+DOUBAN_REVIEW_RTYPE: gu\n"))
-    (goto-char (point-min))
-    (search-forward "DOUBAN_REVIEW_RTYPE: gu")
-    (let* ((capf (douban-metadata-completion-at-point))
-           (start (nth 0 capf))
-           (end (nth 1 capf))
-           (exit-function
-            (plist-get (nthcdr 3 capf) :exit-function)))
-      (should
-       (equal
-        (all-completions "" (nth 2 capf))
-        '("review" "guide")))
-      (delete-region start end)
-      (goto-char start)
-      (insert "guide")
-      (funcall exit-function "guide" 'finished)
-      (should
-       (string-match-p
-        "^#\\+DOUBAN_REVIEW_RTYPE: guide$"
-        (buffer-string)))
-      (should
-       (equal
-        (plist-get
-         (douban--current-buffer-meta)
-         :rtype)
-        "guide")))))
 
 (ert-deftest douban-test-markdown-metadata-value-completion-normalizes-quotes ()
   (with-temp-buffer
@@ -7081,64 +6180,16 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
           "explanation-types: f")
          ("/tmp/status.md"
           "---\ndouban:\n  status: {}\nother:\n  explanation-types: f\n---\n"
-          "explanation-types: f")
-         ("/tmp/status.org"
-          "#+DOUBAN_STATUS:\n#+DOUBAN_NOTE_PRIVACY: f\n"
-          "NOTE_PRIVACY: f")))
+          "explanation-types: f")))
     (with-temp-buffer
       (setq buffer-file-name (nth 0 case))
-      (when (string-suffix-p ".org" buffer-file-name)
-        (org-mode))
       (insert (nth 1 case))
       (goto-char (point-min))
       (search-forward (nth 2 case))
       (should-not
        (douban-metadata-completion-at-point)))))
 
-(ert-deftest douban-test-org-metadata-completion-excludes-blocks-and-drawers ()
-  (dolist
-      (content
-       '("#+BEGIN_EXAMPLE\n#+DOUBAN_STATUS_EXPLANATION_TYPES: f\n#+END_EXAMPLE\n"
-         "#+BEGIN_COMMENT\n#+DOUBAN_STATUS_EXPLANATION_TYPES: f\n#+END_COMMENT\n"
-         "#+BEGIN_CENTER\n#+DOUBAN_STATUS_EXPLANATION_TYPES: f\n#+END_CENTER\n"
-         "#+BEGIN_QUOTE\n#+DOUBAN_STATUS_EXPLANATION_TYPES: f\n#+END_QUOTE\n"
-         "#+BEGIN_VERSE\n#+DOUBAN_STATUS_EXPLANATION_TYPES: f\n#+END_VERSE\n"
-         "#+BEGIN: test\n#+DOUBAN_STATUS_EXPLANATION_TYPES: f\n#+END:\n"
-         "#+BEGIN_FOO\n#+DOUBAN_STATUS_EXPLANATION_TYPES: f\n#+END_FOO\n"
-         ":METADATA:\n#+DOUBAN_STATUS_EXPLANATION_TYPES: f\n:END:\n"))
-    (with-temp-buffer
-      (setq buffer-file-name "/tmp/status.org")
-      (org-mode)
-      (insert
-       (concat
-        "#+DOUBAN_STATUS:\n"
-        content))
-      (goto-char (point-min))
-      (search-forward "DOUBAN_STATUS_EXPLANATION_TYPES: f")
-      (should-not
-       (douban-metadata-completion-at-point)))))
 
-(ert-deftest douban-test-org-nested-metadata-does-not-affect-kind ()
-  (with-temp-buffer
-    (setq buffer-file-name "/tmp/status.org")
-    (org-mode)
-    (insert
-     (concat
-      "#+DOUBAN_STATUS:\n"
-      "#+BEGIN_QUOTE\n"
-      "#+DOUBAN_NOTE_PRIVACY: friends\n"
-      "#+END_QUOTE\n"
-      "#+DOUBAN_STATUS_EXPLANATION_TYPES: p\n"))
-    (goto-char (point-min))
-    (search-forward "DOUBAN_STATUS_EXPLANATION_TYPES: p")
-    (let ((candidates
-           (all-completions
-            ""
-            (nth 2
-                 (douban-metadata-completion-at-point)))))
-      (should (member "public-affairs" candidates))
-      (should (member "personal-opinion" candidates))
-      (should-not (member "friends" candidates)))))
 
 (ert-deftest douban-test-protocol-letters-are-not-source-metadata-values ()
   (dolist
@@ -7248,64 +6299,6 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
             "^  \\(?:review-id\\|note-id\\|status-id\\|kind\\):"
             text)))))))
 
-(ert-deftest douban-test-org-all-kinds-roundtrip ()
-  (dolist
-      (case
-       `((review
-          ,(concat
-            "#+TITLE: 评论\n"
-            "#+DOUBAN_REVIEW:\n"
-            "#+DOUBAN_REVIEW_SUBJECT_ID: 1\n"
-            "#+DOUBAN_REVIEW_SUBJECT_TYPE: book\n"
-            "#+DOUBAN_REVIEW_ID: 11\n"
-            "\n正文\n")
-          :review-id "11")
-         (note
-          ,(concat
-            "#+TITLE: 日记\n"
-            "#+DOUBAN_NOTE:\n"
-            "#+DOUBAN_NOTE_ID: 22\n"
-            "#+DOUBAN_NOTE_PRIVACY: friends\n"
-            "#+DOUBAN_NOTE_CANNOT_REPLY: true\n"
-            "#+DOUBAN_NOTE_AUTHOR_TAGS: 随笔,生活\n\n正文\n")
-          :note-id "22")
-         (status
-         ,(concat
-            "#+DOUBAN_STATUS:\n"
-            "#+DOUBAN_STATUS_ID: 303\n\n广播正文\n")
-          :status-id "303")))
-    (douban-test--with-temp-file
-        ".org" (nth 1 case)
-      (let ((meta (douban--read-meta file)))
-        (should (eq (plist-get meta :kind) (car case)))
-        (should
-         (equal
-          (plist-get meta (nth 2 case))
-          (nth 3 case)))
-        (when (eq (car case) 'note)
-          (should (equal (plist-get meta :note-privacy) "friends"))
-          (should (plist-get meta :cannot-reply))
-          (should
-           (equal
-            (plist-get meta :author-tags)
-            '("随笔" "生活"))))
-        (douban--write-meta file meta)
-        (let ((roundtrip (douban--read-meta file))
-              (text
-               (with-temp-buffer
-                 (insert-file-contents file)
-                 (buffer-string))))
-          (should (eq (plist-get roundtrip :kind) (car case)))
-          (should
-           (equal
-            (plist-get roundtrip (nth 2 case))
-            (nth 3 case)))
-          (should
-           (string-match-p
-            (format
-             "^#\\+DOUBAN_%s:[ \t]*$"
-             (upcase (symbol-name (car case))))
-            text)))))))
 
 (ert-deftest douban-test-omitted-id-branches-roundtrip ()
   (dolist
@@ -7327,25 +6320,7 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
           :status-id
           "---\ndouban:\n  status: {}\n---\n\n"
           "^  status: {}$"
-          "^    id:")
-         (".org"
-          review
-          :review-id
-          "#+TITLE:\n#+DOUBAN_REVIEW:\n#+DOUBAN_REVIEW_SUBJECT_ID: 1\n#+DOUBAN_REVIEW_SUBJECT_TYPE: book\n\n"
-          "^#\\+DOUBAN_REVIEW:[ \t]*$"
-          "^#\\+DOUBAN_REVIEW_ID:")
-         (".org"
-          note
-          :note-id
-          "#+TITLE:\n#+DOUBAN_NOTE:\n\n"
-          "^#\\+DOUBAN_NOTE:[ \t]*$"
-          "^#\\+DOUBAN_NOTE_ID:")
-         (".org"
-          status
-          :status-id
-          "#+DOUBAN_STATUS:\n\n"
-          "^#\\+DOUBAN_STATUS:[ \t]*$"
-          "^#\\+DOUBAN_STATUS_ID:")))
+          "^    id:")))
     (douban-test--with-temp-file
         (nth 0 case) (nth 3 case)
       (let ((meta (douban--read-meta file)))
@@ -7372,11 +6347,7 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
        '((".md"
           "---\ntitle: '评论'\ndouban:\n  kind: review\n  subject-id: '1'\n  subject-type: book\n---\n")
          (".md"
-          "---\ndouban:\n  status-id: '1'\n---\n")
-         (".org"
-          "#+TITLE: 评论\n#+DOUBAN_KIND: review\n#+DOUBAN_SUBJECT_ID: 1\n#+DOUBAN_SUBJECT_TYPE: book\n")
-         (".org"
-          "#+DOUBAN_STATUS_ID: 1\n")))
+          "---\ndouban:\n  status-id: '1'\n---\n")))
     (douban-test--with-temp-file
         (nth 0 case) (nth 1 case)
       (should-error (douban--read-meta file) :type 'error))))
@@ -7434,18 +6405,7 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
           "  status: {}\n"
           "---\n\n广播正文\n")
          "^    explanation-types: none$"
-         "^    explanation-types:")
-        (list
-         ".org"
-         (concat
-          "#+DOUBAN_STATUS:\n"
-          "#+DOUBAN_STATUS_EXPLANATION_TYPES: none\n\n"
-          "广播正文\n")
-         (concat
-          "#+DOUBAN_STATUS:\n\n"
-          "广播正文\n")
-         "^#\\+DOUBAN_STATUS_EXPLANATION_TYPES: none$"
-         "^#\\+DOUBAN_STATUS_EXPLANATION_TYPES:")))
+         "^    explanation-types:")))
     (douban-test--with-temp-file
         (nth 0 case) (nth 1 case)
       (let ((meta (douban--read-meta file)))
@@ -7478,8 +6438,8 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
          (plist-member roundtrip :explanation-types))))))
 
 (ert-deftest douban-test-new-review-creates-parents-and-refuses-existing-files ()
-  (dolist (suffix '(".md" ".org"))
-    (let* ((directory
+  (let* ((suffix ".md")
+         (directory
             (make-temp-file "douban-new-review-" t))
            (file
             (expand-file-name
@@ -7507,45 +6467,27 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
                    (meta (douban--read-meta file)))
               (should (eq (plist-get meta :kind) 'review))
               (should-not
-               (string-match-p
-                (if (string= suffix ".org")
-                    "DOUBAN_KIND"
-                  "^[ \t]+kind:")
-                text))
+               (string-match-p "^[ \t]+kind:" text))
               (should-not
                (string-match-p
                 (regexp-quote "不应成为标题")
                 text))
-              (should
-               (string-match-p
-                (if (string= suffix ".org")
-                    "^#\\+TITLE:[ \t]*$"
-                  "^title: ''$")
-                text))
+              (should (string-match-p "^title: ''$" text))
               (should
                (equal (plist-get meta :subject-id) "123"))
               (should
                (equal (plist-get meta :subject-type) "book"))
               (should
-               (string-match-p
-                (if (string= suffix ".org")
-                    "^#\\+DOUBAN_REVIEW_SUBJECT_ID: 123$"
-                  "^    subject-id: '123'$")
-                text))
+               (string-match-p "^    subject-id: '123'$" text))
               (should-not (plist-member meta :review-id))
               (should-not (plist-get meta :review-id))
-              (should-not
-               (string-match-p
-                (if (string= suffix ".org")
-                    "^#\\+DOUBAN_REVIEW_ID:"
-                  "^    id:")
-                text))
+              (should-not (string-match-p "^    id:" text))
               (should-error
                (douban--create-source-file file meta)
                :type 'file-already-exists)))
         (when-let* ((buffer (find-buffer-visiting file)))
           (kill-buffer buffer))
-        (ignore-errors (delete-directory directory t))))))
+        (ignore-errors (delete-directory directory t)))))
 
 (ert-deftest douban-test-new-review-lisp-entry-requires-url ()
   (should-error
@@ -7815,36 +6757,6 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
       (plist-get (nth 2 (cadr requests)) :headers)
       t))))
 
-(ert-deftest douban-test-json-endpoint-redirect-stays-with-card-protocol ()
-  (let (requests)
-    (cl-letf
-        (((symbol-function 'douban--plz-request)
-          (lambda (method url &rest options)
-            (push (list method url options) requests)
-            (make-plz-response
-             :status 302
-             :headers '(("Location" . "https://evil.example/"))
-             :body ""))))
-      (let* ((source-url "https://example.org/article")
-             (err
-              (should-error
-               (douban--resolve-card source-url)
-               :type 'user-error)))
-        (should
-         (equal
-          (error-message-string err)
-          (format
-           "douban: 无法解析卡片 %s（HTTP 302）"
-           source-url)))))
-    (should (= (length requests) 1))
-    (pcase-let ((`(,method ,_url ,options) (car requests)))
-      (should (equal method "GET"))
-      (should
-       (equal
-        (cdr
-         (assoc-string
-          "Referer" (plist-get options :headers) t))
-        "https://www.douban.com/")))))
 
 (ert-deftest douban-test-json-endpoint-callers-keep-non-2xx-errors ()
   (cl-letf
@@ -11130,65 +10042,6 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
       (when (buffer-live-p source)
         (kill-buffer source)))))
 
-(ert-deftest douban-test-org-subject-id-capf-uses-flat-metadata-and-writes-id ()
-  (let* ((subject
-          '(:subject-id "1295644"
-            :subject-type "movie"
-            :title "这个杀手不太冷"
-            :summary "让·雷诺 / 娜塔莉·波特曼"))
-         (label (douban--subject-candidate-label subject))
-         (searches 0))
-    (with-temp-buffer
-      (setq buffer-file-name "/tmp/review.org")
-      (org-mode)
-      (insert
-       (concat
-        "#+TITLE: 长评\n"
-        "#+DOUBAN_REVIEW:\n"
-        "#+DOUBAN_REVIEW_SUBJECT_ID: 娜塔莉\n"
-        ;; Org metadata is flat and keyword order is not significant.
-        "#+DOUBAN_REVIEW_SUBJECT_TYPE: movie\n\n"
-        "正文\n"))
-      (goto-char (point-min))
-      (search-forward "SUBJECT_ID: 娜塔莉")
-      (cl-letf
-          (((symbol-function 'douban--search-subjects)
-            (lambda (query subject-type)
-              (cl-incf searches)
-              (should (equal query "娜塔莉"))
-              (should (equal subject-type "movie"))
-              (list subject))))
-        (let* ((capf
-                (douban-metadata-completion-at-point))
-               (start (nth 0 capf))
-               (end (nth 1 capf))
-               (table (nth 2 capf))
-               (exit-function
-                (plist-get
-                 (nthcdr 3 capf)
-                 :exit-function)))
-          (should capf)
-          (should (= searches 0))
-          (should-not (string-prefix-p "娜塔莉" label))
-          (should
-           (equal
-            (all-completions "娜塔莉" table)
-            (list label)))
-          (should (= searches 1))
-          (delete-region start end)
-          (goto-char start)
-          (insert label)
-          (funcall exit-function label 'finished)
-          (should
-           (string-match-p
-            "^#\\+DOUBAN_REVIEW_SUBJECT_ID: 1295644$"
-            (buffer-string)))
-          (should
-           (equal
-            (plist-get
-             (douban--current-buffer-meta)
-             :subject-id)
-            "1295644")))))))
 
 (ert-deftest douban-test-annotation-subject-id-capf-is-fixed-to-book ()
   (let* ((subject
@@ -11220,15 +10073,14 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
           (should (equal (all-completions "加缪" table) (list label)))
           (should (= searches 1)))))
     (with-temp-buffer
-      (setq buffer-file-name "/tmp/annotation.org")
-      (org-mode)
+      (setq buffer-file-name "/tmp/annotation.md")
       (insert
        (concat
-        "#+DOUBAN_ANNOTATION:\n"
-        "#+DOUBAN_ANNOTATION_ID: 456\n"
-        "#+DOUBAN_ANNOTATION_SUBJECT_ID: 加缪\n"))
+        "---\ndouban:\n  annotation:\n"
+        "    id: '456'\n"
+        "    subject-id: 加缪\n---\n"))
       (goto-char (point-min))
-      (search-forward "SUBJECT_ID: 加缪")
+      (search-forward "subject-id: 加缪")
       (cl-letf
           (((symbol-function 'douban--search-subjects)
             (lambda (&rest _arguments)
@@ -11289,17 +10141,9 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
           "subject-id: 加缪")
          ("/tmp/status.md"
           "---\ndouban:\n  status:\n    subject-id: 加缪\n---\n"
-          "subject-id: 加缪")
-         ("/tmp/review.org"
-          "#+DOUBAN_STATUS:\n#+DOUBAN_REVIEW_SUBJECT_ID: 加缪\n#+DOUBAN_REVIEW_SUBJECT_TYPE: book\n"
-          "SUBJECT_ID: 加缪")
-         ("/tmp/review.org"
-          "#+DOUBAN_REVIEW:\n#+BEGIN_QUOTE\n#+DOUBAN_REVIEW_SUBJECT_ID: 加缪\n#+END_QUOTE\n#+DOUBAN_REVIEW_SUBJECT_TYPE: book\n"
-          "SUBJECT_ID: 加缪")))
+          "subject-id: 加缪")))
     (with-temp-buffer
       (setq buffer-file-name (nth 0 case))
-      (when (string-suffix-p ".org" buffer-file-name)
-        (org-mode))
       (insert (nth 1 case))
       (goto-char (point-min))
       (search-forward (nth 2 case))
@@ -11321,17 +10165,9 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
           "加缪")
          ("/tmp/review.md"
           "---\ndouban:\n  review:\n    subject-id: '2046'\n    subject-type: movie\n---\n"
-          "2046")
-         ("/tmp/review.org"
-          "#+DOUBAN_REVIEW:\n#+DOUBAN_REVIEW_ID: 77\n#+DOUBAN_REVIEW_SUBJECT_ID: 加缪\n#+DOUBAN_REVIEW_SUBJECT_TYPE: book\n"
-          "SUBJECT_ID: 加缪")
-         ("/tmp/review.org"
-          "#+DOUBAN_REVIEW:\n#+DOUBAN_REVIEW_SUBJECT_ID: 2046\n#+DOUBAN_REVIEW_SUBJECT_TYPE: movie\n"
-          "SUBJECT_ID: 2046")))
+          "2046")))
     (with-temp-buffer
       (setq buffer-file-name (nth 0 case))
-      (when (string-suffix-p ".org" buffer-file-name)
-        (org-mode))
       (insert (nth 1 case))
       (goto-char (point-min))
       (search-forward (nth 2 case))
@@ -11481,16 +10317,9 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
           "---\ndouban:\n  review:\n    subject-id: '123'\n    subject-type: game\n    platforms:\n      - '1'\n      - Pla\n---\n"
           "- Pla"
           "Pla"
-          markdown)
-         ("/tmp/review.org"
-          "#+DOUBAN_REVIEW:\n#+DOUBAN_REVIEW_SUBJECT_ID: 123\n#+DOUBAN_REVIEW_SUBJECT_TYPE: game\n#+DOUBAN_REVIEW_PLATFORMS: 1, Pla, 3\n"
-          ", Pla"
-          "Pla"
-          org)))
+          markdown)))
     (with-temp-buffer
       (setq buffer-file-name (nth 0 case))
-      (when (eq (nth 4 case) 'org)
-        (org-mode))
       (insert (nth 1 case))
       (goto-char (point-min))
       (search-forward (nth 2 case))
@@ -11674,71 +10503,6 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
            :platforms)
           '("3" "2")))))))
 
-(ert-deftest douban-test-org-platform-capf-replaces-only-current-comma-token ()
-  (let ((platforms
-         '((:id "1" :name "PC" :cn-name "PC" :abbreviation "PC")
-           (:id "2"
-            :name "PlayStation 5"
-            :cn-name "PlayStation 5"
-            :abbreviation "PS5")
-           (:id "3"
-            :name "Xbox Series"
-            :cn-name "Xbox Series"
-            :abbreviation "Xbox")))
-        (reads 0))
-    (with-temp-buffer
-      (setq buffer-file-name "/tmp/review.org")
-      (org-mode)
-      (insert
-       (concat
-        "#+TITLE: 游戏长评\n"
-        "#+DOUBAN_REVIEW:\n"
-        "#+DOUBAN_REVIEW_SUBJECT_ID: 123\n"
-        "#+DOUBAN_REVIEW_SUBJECT_TYPE: game\n"
-        "#+DOUBAN_REVIEW_PLATFORMS: 1, Pla, 3\n\n"
-        "正文\n"))
-      (goto-char (point-min))
-      (search-forward ", Pla")
-      (cl-letf
-          (((symbol-function 'douban--game-platforms)
-            (lambda (subject-id)
-              (cl-incf reads)
-              (should (equal subject-id "123"))
-              platforms)))
-        (let* ((capf
-                (douban-metadata-completion-at-point))
-               (start (nth 0 capf))
-               (end (nth 1 capf))
-               (table (nth 2 capf))
-               (exit-function
-                (plist-get
-                 (nthcdr 3 capf)
-                 :exit-function))
-               (candidates (all-completions "" table)))
-          (should capf)
-          (should
-           (equal
-            (buffer-substring-no-properties start end)
-            "Pla"))
-          (should (equal candidates '("PlayStation 5")))
-          (should (= reads 1))
-          (delete-region start end)
-          (goto-char start)
-          (insert "PlayStation 5")
-          (funcall
-           exit-function "PlayStation 5" 'finished)
-          (should
-           (string-match-p
-            (concat
-             "^#\\+DOUBAN_REVIEW_PLATFORMS:"
-             " 1, 2, 3$")
-            (buffer-string)))
-          (should
-           (equal
-            (plist-get
-             (douban--current-buffer-meta)
-             :platforms)
-            '("1" "2" "3"))))))))
 
 (ert-deftest douban-test-platform-capf-rejects-wrong-context-without-network ()
   (dolist
@@ -11754,17 +10518,9 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
           "platforms: PC")
          ("/tmp/review.md"
           "---\ndouban:\n  review:\n    subject-id: '123'\n    subject-type: game\n    nested:\n      platforms:\n        - PC\n---\n"
-          "- PC")
-         ("/tmp/review.org"
-          "#+DOUBAN_STATUS:\n#+DOUBAN_REVIEW_SUBJECT_ID: 123\n#+DOUBAN_REVIEW_SUBJECT_TYPE: game\n#+DOUBAN_REVIEW_PLATFORMS: PC\n"
-          "PLATFORMS: PC")
-         ("/tmp/review.org"
-          "#+DOUBAN_REVIEW:\n#+DOUBAN_REVIEW_SUBJECT_ID: 123\n#+DOUBAN_REVIEW_SUBJECT_TYPE: game\n#+BEGIN_DRAWER\n#+DOUBAN_REVIEW_PLATFORMS: PC\n#+END_DRAWER\n"
-          "PLATFORMS: PC")))
+          "- PC")))
     (with-temp-buffer
       (setq buffer-file-name (nth 0 case))
-      (when (string-suffix-p ".org" buffer-file-name)
-        (org-mode))
       (insert (nth 1 case))
       (goto-char (point-min))
       (search-forward (nth 2 case))
@@ -11797,6 +10553,337 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
      (equal
       (completion-boundaries "加缪" table nil "")
       '(0 . 0)))))
+
+;; Link-card regression tests.
+(defun douban-test--card-html (&optional url title)
+  "返回 URL 和 TITLE 对应的 Microformats2 `h-cite' HTML。"
+  (format
+   (concat
+    "<div class=\"h-cite\">"
+    "<a class=\"u-url p-name\" href=\"%s\">%s</a>"
+    "</div>")
+   (or url "https://book.douban.com/subject/4908885/")
+   (or title "局外人")))
+
+(ert-deftest douban-test-card-html-becomes-atomic-entity ()
+  (dolist
+      (url
+       '("https://example.com/articles/1?from=douban"
+         "http://example.net/articles/1"
+         "http://book.douban.com/subject/4908885/"))
+    (let* ((raw
+            (douban--html-to-draft
+             (douban-test--card-html url "链接标题")))
+           (blocks (plist-get raw :blocks))
+           (block (aref blocks 0))
+           (range (aref (plist-get block :entityRanges) 0))
+           (entity (douban-test--first-draft-entity raw))
+           (data (plist-get entity :data)))
+      (should (= (length blocks) 1))
+      (should (equal (plist-get block :type) "atomic"))
+      (should (equal (plist-get block :text) " "))
+      (should (= (plist-get range :offset) 0))
+      (should (= (plist-get range :length) 1))
+      (should (= (plist-get range :key) 0))
+      (should (equal (plist-get entity :type) "LINK"))
+      (should (equal (plist-get entity :mutability) "IMMUTABLE"))
+      (should (equal (plist-get data :url) url))
+      (should (equal (plist-get data :title) "链接标题"))
+      (should (equal (plist-get data :display) "atomic")))))
+
+(ert-deftest douban-test-card-html-rejects-invalid-placement-and-url ()
+  (dolist
+      (html
+       (list
+        (format
+         "<section>前%s后</section>"
+         (douban-test--card-html))
+        (douban-test--card-html "../subject/4908885/")
+        (douban-test--card-html "//example.com/articles/1")
+        (douban-test--card-html "ftp://example.com/articles/1")
+        (douban-test--card-html "https:///missing-host")))
+    (should-error (douban--html-to-draft html) :type 'user-error)))
+
+(ert-deftest douban-test-card-only-draft-is-nonempty-content ()
+  (let ((raw
+         (douban--html-to-draft
+          (douban-test--card-html))))
+    ;; 原子卡片不计入长评字数，但应足以构成日记或广播正文。
+    (should (= (douban--draft-character-count raw) 0))
+    (should (= (douban--validate-content-draft raw "日记") 0))))
+
+(ert-deftest douban-test-rewrite-draft-cards-follows-first-reference-order ()
+  (cl-labels
+      ((link
+        (name)
+        (list
+         :type "LINK"
+         :mutability "IMMUTABLE"
+         :data
+         (list
+          :url (format "https://example.org/%s" name)
+          :display "atomic"))))
+    (let* ((raw
+            (douban-test--entity-raw
+             `(("1" . ,(link "one"))
+               ("9" . ,(link "orphan"))
+               ("0" . ,(link "zero"))
+               ("2" . ,(link "two")))
+             '("2" "0" "2")
+             '("1")))
+           requests)
+      (cl-letf
+          (((symbol-function 'douban--resolve-card)
+            (lambda (url)
+              (push url requests)
+              (list
+               :type "LINK"
+               :data
+               (list
+                :title url
+                :url url
+                :display "atomic")))))
+        (should (eq (douban--rewrite-draft-cards raw) raw)))
+      (should
+       (equal
+        (nreverse requests)
+        '("https://example.org/two"
+          "https://example.org/zero"
+          "https://example.org/one"))))))
+
+(ert-deftest douban-test-rewrite-draft-cards-resolves-and-caches-url ()
+  (let* ((source-url "http://book.douban.com/subject/4908885/")
+         (canonical-url
+          "https://book.douban.com/subject/4908885/")
+         (raw
+          (douban--html-to-draft
+           (concat
+            (douban-test--card-html source-url "源稿标题")
+            (douban-test--card-html source-url "另一个源稿标题"))))
+         (requests 0)
+         (response-data
+          '(:id "4908885"
+            :type "book"
+            :title "局外人"
+            :url "https://book.douban.com/subject/4908885/"
+            :cover
+            "https://img9.doubanio.com/view/subject/l/public/s4468484.jpg"
+            :summary "[法] 阿尔贝·加缪 / 2010 / 上海译文出版社"
+            :rating (:max 10.0 :value 9.1)
+            :api-only "server-value")))
+    (cl-letf
+        (((symbol-function 'douban--plz-request)
+          (lambda (method request-url &rest options)
+            (cl-incf requests)
+            (should (equal method "GET"))
+            (should
+             (string-match-p
+              "/rexxar/api/v2/get_url_info?"
+              request-url))
+            (should (string-match-p "[?&]need_card=1\\(?:&\\|\\'\\)"
+                                    request-url))
+            (should (string-match-p "[?&]editor_type=group\\(?:&\\|\\'\\)"
+                                    request-url))
+            (should
+             (string-match-p
+              (regexp-quote (url-hexify-string source-url))
+              request-url))
+            (should-not
+             (cl-find-if
+              (lambda (header)
+                (string-equal
+                 (downcase (format "%s" (car header)))
+                 "cookie"))
+              (plist-get options :headers)))
+            (make-plz-response
+             :status 200
+             :body
+             (json-encode
+              (list :type "SUBJECT" :data response-data))))))
+      (should (eq (douban--rewrite-draft-cards raw) raw)))
+    (should (= requests 1))
+    (should (= (hash-table-count (plist-get raw :entityMap)) 2))
+    (maphash
+     (lambda (_key entity)
+       (let ((data (plist-get entity :data)))
+         (should (equal (plist-get entity :type) "SUBJECT"))
+         (should (equal (plist-get data :id) "4908885"))
+         (should (equal (plist-get data :type) "book"))
+         (should (equal (plist-get data :title) "局外人"))
+         (should (equal (plist-get data :url) canonical-url))
+         (should
+          (equal
+           (plist-get data :cover)
+           (plist-get response-data :cover)))
+         (should
+          (equal
+           (plist-get data :summary)
+           (plist-get response-data :summary)))
+         (should
+          (= (plist-get (plist-get data :rating) :value) 9.1))
+         (should (equal (plist-get data :api-only) "server-value"))
+         (should (equal (plist-get data :display) "atomic"))
+         (dolist (alias '(:caption :cover_url :card_subtitle))
+           (should-not (plist-member data alias)))
+         (should
+          (equal
+           data
+           (append response-data '(:display "atomic"))))))
+     (plist-get raw :entityMap))))
+
+(ert-deftest douban-test-rewrite-draft-cards-keeps-link-result ()
+  (let* ((source-url "http://example.com/articles/1")
+         (raw
+          (douban--html-to-draft
+           (douban-test--card-html source-url "源稿标题")))
+         (response-data
+          '(:title "服务端标题"
+            :url "https://example.com/articles/1"
+            :cover_url "https://example.com/cover.jpg"
+            :card_subtitle "服务端摘要"
+            :api-only "server-value")))
+    (cl-letf
+        (((symbol-function 'douban--plz-request)
+          (lambda (&rest _arguments)
+            (make-plz-response
+             :status 200
+             :body
+             (json-encode
+              (list :type "LINK" :data response-data))))))
+      (should (eq (douban--rewrite-draft-cards raw) raw)))
+    (let* ((entity (douban-test--first-draft-entity raw))
+           (data (plist-get entity :data)))
+      (should (equal (plist-get entity :type) "LINK"))
+      (should (equal (plist-get entity :mutability) "IMMUTABLE"))
+      (should
+       (equal
+        data
+        (append response-data '(:display "atomic")))))))
+
+(ert-deftest douban-test-rewrite-draft-cards-ignores-ordinary-links ()
+  (dolist
+      (url
+       '("https://book.douban.com/subject/4908885/"
+         "https://example.com/articles/1"))
+    (let* ((raw
+            (douban--html-to-draft
+             (format "<p><a href=\"%s\">普通链接</a></p>" url)))
+           (before (copy-tree raw)))
+      (cl-letf
+          (((symbol-function 'douban--plz-request)
+            (lambda (&rest _arguments)
+              (ert-fail "普通链接不得调用卡片解析接口"))))
+        (should (eq (douban--rewrite-draft-cards raw) raw)))
+      (should (equal raw before))
+      (let* ((entity (douban-test--first-draft-entity raw))
+             (data (plist-get entity :data)))
+        (should (equal (plist-get entity :type) "LINK"))
+        (should (equal (plist-get entity :mutability) "MUTABLE"))
+        (should (equal (plist-get data :url) url))
+        (should-not (plist-member data :display))))))
+
+(ert-deftest douban-test-rewrite-draft-cards-rejects-invalid-result ()
+  (dolist
+      (result
+       '((:type "URL"
+          :data (:url "https://example.com/articles/1"))
+         (:type "LINK"
+          :data (:title "相对地址" :url "../articles/1"))
+         (:type "LINK"
+          :data
+          (:title "不安全封面"
+           :url "https://example.com/articles/1"
+           :cover_url "http://example.com/cover.jpg"))
+         (:type "SUBJECT"
+          :data
+          (:id "4908885"
+           :type "book"
+           :title "局外人"
+           :url "http://book.douban.com/subject/4908885/"))))
+    (let ((raw
+           (douban--html-to-draft
+            (douban-test--card-html))))
+      (cl-letf
+          (((symbol-function 'douban--plz-request)
+            (lambda (&rest _arguments)
+              (make-plz-response
+               :status 200
+               :body (json-encode result)))))
+        (should-error
+         (douban--rewrite-draft-cards raw)
+         :type 'error)))))
+
+(ert-deftest douban-test-json-endpoint-redirect-stays-with-card-protocol ()
+  (let (requests)
+    (cl-letf
+        (((symbol-function 'douban--plz-request)
+          (lambda (method url &rest options)
+            (push (list method url options) requests)
+            (make-plz-response
+             :status 302
+             :headers '(("Location" . "https://evil.example/"))
+             :body ""))))
+      (let* ((source-url "https://example.org/article")
+             (err
+              (should-error
+               (douban--resolve-card source-url)
+               :type 'user-error)))
+        (should
+         (equal
+          (error-message-string err)
+          (format
+           "douban: 无法解析卡片 %s（HTTP 302）"
+           source-url)))))
+    (should (= (length requests) 1))
+    (pcase-let ((`(,method ,_url ,options) (car requests)))
+      (should (equal method "GET"))
+      (should
+       (equal
+        (cdr
+         (assoc-string
+          "Referer" (plist-get options :headers) t))
+        "https://www.douban.com/")))))
+(ert-deftest douban-test-pandoc-preserves-h-cite-card ()
+  (skip-unless (executable-find "pandoc"))
+  (dolist
+      (url
+       '("https://example.com/articles/1"
+         "http://example.net/articles/1"
+         "http://book.douban.com/subject/4908885/"))
+    (let* ((html
+            (douban--pandoc-to-html
+             "gfm" (douban-test--card-html url "链接标题")))
+           (document
+            (douban--parse-html
+             (concat "<html><body>" html "</body></html>")))
+           (body (car (dom-by-tag document 'body)))
+           (elements
+            (cl-remove-if-not #'consp (dom-children body)))
+           (raw (douban--html-to-draft html))
+           (entity (douban-test--first-draft-entity raw)))
+      (should (= (length elements) 1))
+      (should (dom-by-class body "h-cite"))
+      (should (dom-by-class body "u-url"))
+      (should (dom-by-class body "p-name"))
+      (should (equal (plist-get entity :type) "LINK"))
+      (should
+       (equal
+        (plist-get (plist-get entity :data) :title)
+        "链接标题")))))
+
+(ert-deftest douban-test-pandoc-card-title-is-an-ordinary-link ()
+  (skip-unless (executable-find "pandoc"))
+  (let* ((url "https://book.douban.com/subject/4908885/")
+         (html
+          (douban--pandoc-to-html
+           "gfm" (format "[局外人](%s \"card\")" url)))
+         (raw (douban--html-to-draft html))
+         (entity (douban-test--first-draft-entity raw)))
+    (should-not (string-match-p "h-cite" html))
+    (should (equal (plist-get entity :type) "LINK"))
+    (should (equal (plist-get entity :mutability) "MUTABLE"))
+    (should (equal (plist-get (plist-get entity :data) :url) url))))
+
 
 (provide 'douban-test)
 ;;; douban-test.el ends here
