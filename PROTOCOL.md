@@ -24,7 +24,7 @@
 源稿仅支持 Markdown 和 Org。Markdown 只接受规范的顶层 `douban:`
 mapping，且其中必须且只能包含 `review`、`note`、`annotation` 或 `status` 中的一个子
 mapping；唯一子 mapping 的名称确定稿件类型，不保存 `kind`，也不从其他
-字段推断。`id`、`topic-id`、`privacy` 等是类型子 mapping 内的
+字段推断。`id`、`privacy` 等是类型子 mapping 内的
 叶子字段。例如：
 
 ```yaml
@@ -35,8 +35,8 @@ douban:
 ```
 
 新日记与新广播分别使用 `note: {}` 和 `status: {}`。新读书笔记使用带必填
-`subject-id` 的 `annotation` mapping。初次发布省略 `id`，
-新广播也省略 `topic-id`；ID 字段一旦出现便必须是非空正整数。长评的
+`subject-id` 的 `annotation` mapping。初次发布省略 `id`；ID 字段一旦出现
+便必须是非空正整数。长评的
 `review.subject-id` 与 `review.subject-type` 必填；每类内容只接受自己的
 叶子字段，未知类型、多个类型、未知字段和跨类型字段即使为空也直接报错。
 图片处理结果不属于 metadata，也不会写回源稿。
@@ -45,15 +45,14 @@ Org 用值为空的 `#+DOUBAN_REVIEW:`、`#+DOUBAN_NOTE:`、
 `#+DOUBAN_ANNOTATION:` 或 `#+DOUBAN_STATUS:` 作为唯一内容类型标记，
 叶子字段则使用完整路径，例如
 `#+DOUBAN_REVIEW_SUBJECT_ID:`、`#+DOUBAN_NOTE_PRIVACY:` 和
-`#+DOUBAN_STATUS_TOPIC_ID:`。标记本身的值必须为空；缺少标记、出现多个
+`#+DOUBAN_STATUS_ID:`。标记本身的值必须为空；缺少标记、出现多个
 标记、使用不带类型路径的字段或把别的类型字段放在当前标记下都会报错。
 
 读书笔记接受可选的 `annotation.privacy` 与 `annotation.explanation-types`。
 普通广播还接受可选的 `status.explanation-types` 与 `status.anthology-id`。
-在远端标识方面，
-长评、日记和读书笔记各自只保存 `id`；普通广播同时保存公开 wrapper 的 `status.id`
-和 personal topic 的 `status.topic-id`。URL 不属于源稿 metadata，只用于
-响应校验和完成消息；规范 URL 由已核对的远端结果与 ID 得到，不写回源稿。
+四类内容都只保存 `id`；普通广播的 `status.id` 是创建响应返回、更新 API
+使用的 personal topic ID。URL 不属于源稿 metadata，只用于能够可靠得到
+URL 的响应校验和完成消息，不写回源稿。
 标题只取源稿中用户手写的顶层 `title` / `#+TITLE`；不会从条目名称或
 文件名推导。普通广播没有标题。实现不接受 Typst。
 长评、读书笔记和普通广播都不接受 `original` 叶子字段或对应的 Org
@@ -106,13 +105,13 @@ yaml.el 覆盖旧值之前直接报错。为保证 metadata checkpoint 重写
 普通广播协议以 2026-07-30 豆瓣首页实际加载的个人话题编辑器为主要证据：
 
 - [`personal-topic-editor.42ee6.js`](https://img9.doubanio.com/cuphead/sns-static/personal-topic-editor.42ee6.js)
-- `https://www.douban.com/` 中的 `personal-topic-editor` 初始化状态和发布后 `status-item` DOM
+- `https://www.douban.com/` 中的 `personal-topic-editor` 初始化状态
 
-该 bundle 明确使用 `https://m.douban.com/rexxar/api/v2/topic/post`、带凭据的 Axios、`X-CSRF-TOKEN` 和 JSON 请求体。正文是 Draft.js raw 再序列化所得的 JSON 字符串；personal 创建分支显式提交 `group_id: "0"`。首页 DOM 则明确区分 personal topic 的 `data-aid` 与广播状态的 `data-sid`。
+该 bundle 明确使用 `https://m.douban.com/rexxar/api/v2/topic/post`、带凭据的 Axios、`X-CSRF-TOKEN` 和 JSON 请求体。正文是 Draft.js raw 再序列化所得的 JSON 字符串；personal 创建分支显式提交 `group_id: "0"`。
 
 已有普通广播的 `/topic/{aid}/edit` 页面及其当前 topic editor bundle 进一步确认：更新使用 `POST https://m.douban.com/rexxar/api/v2/group/topic/{aid}/post`，aid 只进入 URL 路径；最终 payload 不带 `id`、`title` 或 `group_id`，但会原样重送 `video_info`。页面的 `__INIT_STATE__.topic` 标明 `is_personal_topic: true`、`subtype: "personal"`，并提供需要沿用的回复权限、可见范围、兴趣标签、原创与视频标记、文集、图片 `seq_id` 和布局。兴趣标签对象按名称以 `#` 连接；personal 更新的 `topic_tag_ids` 为空字符串。
 
-当前实现的成功判据是：长评与日记需要可解析且字段一致的 JSON；普通广播的创建端点返回 2xx 后，优先以响应中的个人话题 ID 对应首页 `data-aid`，响应没有可用 ID 时才按非原子正文唯一匹配，最后以 `data-sid` 构造规范广播 URL；普通广播更新与网页编辑器一致，只把 2xx 且 JavaScript truthy 的响应数据视为成功，并保持已有 sid 和 aid。
+当前实现的成功判据是：长评与日记需要可解析且字段一致的 JSON；普通广播创建需要 2xx 和响应中的合法个人话题 ID，不再读取首页或解析公开 wrapper sid；普通广播更新与网页编辑器一致，只把 2xx 且 JavaScript truthy 的响应数据视为成功，并保持已有 topic ID。
 
 当前新式读书笔记协议以创建页、编辑页和 2026-08-03 加载的 topic editor
 bundle 为主要证据：
@@ -572,7 +571,7 @@ Content-Type: multipart/form-data
 
 ### 普通广播图片
 
-普通广播使用 topic 编辑器的图片协议。含图时，程序先只读真实编辑页，从页面全局状态取得 `upload_auth_token`；创建读取首页，更新读取 `/topic/{aid}/edit`，其中 aid 来自 `status.topic-id`。
+普通广播使用 topic 编辑器的图片协议。含图时，程序先只读真实编辑页，从页面全局状态取得 `upload_auth_token`；创建读取首页，更新读取 `/topic/{aid}/edit`，其中 aid 来自 `status.id`。
 
 `m.douban.com` topic API 与 `www.douban.com` 页面/上传端点使用独立
 Cookie 会话。网页会话只显式复用 API 会话取得的 `ck`；两边 Cookie
@@ -890,37 +889,17 @@ Origin: https://www.douban.com
 
 Draft.js raw 正文不能为空；文字块或有效原子块都可构成正文。当前 personal-topic 编辑器没有旧首页广播的 140 UTF-16 code unit 前端限制，本包也不再施加该旧限制。
 
-创建端点的成功响应不提供可直接写回的广播 `status sid`。响应顶层若出现有效正整数 `id`，它是 personal topic ID，也就是首页的 `aid`，不能当作广播 `sid`。
-
-因此 2xx 响应后，程序先按当前网页编辑器留出的约 300ms 可见性窗口等待，再使用同一登录态、`Cache-Control: no-cache` 读取首页，并只匹配：
-
-```text
-.status-item[data-atype="personal/topic"]
-```
-
-候选必须同时具有数字 `data-uid`、`data-sid` 和 `data-aid`。响应给出 topic ID 时，程序优先要求 `data-aid` 与之相等；响应没有该 ID 时，才把 raw 中所有非原子块的文字规范化后，与候选 `blockquote` 纯文本做唯一匹配。只有恰好一个匹配项才确认成功：
-
-```text
-data-sid  -> status.id
-data-aid  -> status.topic-id
-https://www.douban.com/people/{data-uid}/status/{data-sid}/
-```
-
-`aid` 与 `sid` 是两个不同命名空间；源稿的 `status.id` 必须写 `sid`，
-`status.topic-id` 必须写 `aid`。创建成功时，程序同时写回 `status.id`、
-`status.topic-id`。规范 URL 用于完成消息，不写入源稿。首页是创建流程
-取得 `sid` 并完成发布对账的唯一依据。纯图片或纯链接卡片没有可用于正文
-回查的非原子文字，因此响应又缺少 topic ID 时无法自动确认。POST 已返回
-2xx 但首页没有唯一匹配时，发布已经被接受却无法安全写回 checkpoint，
-程序会要求用户到个人主页记录链接并禁止直接重发。普通 4xx（408 除外）
-视为明确失败；传输中断、408、5xx 或其他无法判断服务端是否写入的结果
-仍按不确定创建处理。
+创建端点的响应顶层 `id` 是 personal topic ID，而不是公开广播 wrapper 的
+sid。程序要求 2xx 响应同时包含合法正整数 `id`，并直接把它写入
+`status.id`；创建流程不再读取首页、按正文查找广播或保存 sid。POST 已返回
+2xx 但没有合法 topic ID 时，发布已经被接受却无法安全写回 checkpoint，
+程序要求用户到个人主页检查且禁止直接重发。普通 4xx（408 除外）视为明确
+失败；传输中断、408、5xx 或其他无法判断服务端是否写入的结果仍按不确定
+创建处理。
 
 ### 更新
 
-只有 `status.id` 和 `status.topic-id` 同时存在时才进入更新路径；两者
-只出现一个会直接报错。更新端点使用 personal topic aid，不使用公开
-wrapper sid：
+`status.id` 存在时进入更新路径。该值是 personal topic ID：
 
 ```http
 POST https://m.douban.com/rexxar/api/v2/group/topic/{aid}/post
@@ -931,7 +910,7 @@ Referer: https://www.douban.com/topic/{aid}/edit
 Origin: https://www.douban.com
 ```
 
-aid 取自 `status.topic-id`，只出现在更新 URL 中，JSON 不提交 `id`、
+aid 取自 `status.id`，只出现在更新 URL 中，JSON 不提交 `id`、
 `title` 或 `group_id`。正文仍是二次 JSON 编码的 Draft.js raw，`subtype`
 固定为 `"personal"`。每次更新都先只读对应 edit 页，核对 personal topic
 的 aid，并取得现有回复权限、可见范围、兴趣标签、原创、内容说明与视频标记、文集、
@@ -943,7 +922,7 @@ aid 取自 `status.topic-id`，只出现在更新 URL 中，JSON 不提交 `id`�
 保留现有设置。回复范围始终保留页面值。
 原创状态没有对应的 status metadata，因此始终保留页面值。
 
-网页编辑器对更新响应不要求 `r`、`id` 或 `url` 成功标记，但只在 Axios 取得 JavaScript truthy 的响应数据时进入完成状态；因此本包要求 2xx 和同样的 truthy 数据。空 body、JSON `null`、`false`、`0` 与空字符串均不算成功；空对象和空数组在 JavaScript 中为 truthy。更新不读取首页对账，不写入新的 checkpoint，也绝不因失败而退回 `/topic/post` 创建新广播。明确 4xx 作为拒绝返回；传输错误、408 与 5xx 作为更新错误返回，由用户决定是否再次更新同一个 topic。
+网页编辑器对更新响应不要求 `r`、`id` 或 `url` 成功标记，但只在 Axios 取得 JavaScript truthy 的响应数据时进入完成状态；因此本包要求 2xx 和同样的 truthy 数据。空 body、JSON `null`、`false`、`0` 与空字符串均不算成功；空对象和空数组在 JavaScript 中为 truthy。更新不写入新的 checkpoint，也绝不因失败而退回 `/topic/post` 创建新广播。明确 4xx 作为拒绝返回；传输错误、408 与 5xx 作为更新错误返回，由用户决定是否再次更新同一个 topic。
 
 ## 更新边界
 
@@ -952,18 +931,18 @@ aid 取自 `status.topic-id`，只出现在更新 URL 中，JSON 不提交 `id`�
 - `review`：没有 `review.id` 时创建；有 `review.id` 时更新。不含图片时按 `review.subject-type` 选择固定同源端点，使用发布页上下文时还必须核对 `review.id` 和 `review.subject-id`；两条路径都只接受规范评论 URL，更新时还核对 URL 中的 ID；
 - `note`：没有 `note.id` 时读取创建页、保存预分配 ID 并首次发布；有 `note.id` 时复用匹配 ID 的 `/note/{note_id}/edit` 页面会话，由页面 action 区分恢复尚未发布的草稿与更新已发布日记；
 - `annotation`：没有 `annotation.id` 时通过新式 topic 入口创建；有 ID 时必须从 edit state 同时核对 topic ID、`annotation` subtype 和图书 subject，随后只更新同一 topic；
-- `status`：没有 `status.id` 和 `status.topic-id` 时创建；两者同时存在时用 aid 更新同一 personal topic，并保持两个 checkpoint 字段不变。
+- `status`：没有 `status.id` 时创建；有 ID 时用它更新同一 personal topic，并保持该 checkpoint 不变。
 
 因此页面字段或提交模式发生未知变化时不会降级成创建，也不能通过修改或
 混用不同内容类型的 checkpoint 字段绕过 ID 校验。
 
 ## 不确定创建
 
-创建 POST 不是幂等操作。传输中断、HTTP 408 或响应无法核对，都可能发生在服务端完成写入之后。四类内容的创建请求都只发送一次，不会自动重试；通常在结果无法确认时抛出 `douban-create-result-unknown`。普通广播 POST 已返回 2xx 但首页无法唯一取得 `sid`，以及读书笔记 POST 已返回 2xx 却没有一致可用的 topic 身份时，会抛出 `douban-published-but-not-checkpointed`，表示远端已经接受发布而本地不能安全写回。
+创建 POST 不是幂等操作。传输中断、HTTP 408 或响应无法确认，都可能发生在服务端完成写入之后。四类内容的创建请求都只发送一次，不会自动重试；通常在结果无法确认时抛出 `douban-create-result-unknown`。普通广播 POST 已返回 2xx 但没有合法 topic ID，以及读书笔记 POST 已返回 2xx 却没有一致可用的 topic 身份时，会抛出 `douban-published-but-not-checkpointed`，表示远端已经接受发布而本地不能安全写回。
 
 确认成功时，程序只在各流程要求的成功标记与远端身份通过验证后写回
-checkpoint：长评、日记和读书笔记写 `id`，普通广播写 `id` 与
-`topic-id`。URL 只用于校验和消息，不写入源稿。普通 4xx（408 除外）或
+checkpoint：四类内容都只写 `id`，普通广播的 ID 是 personal topic ID。
+URL 只用于能够可靠得到 URL 的响应校验和消息，不写入源稿。普通 4xx（408 除外）或
 明确的表单/JSON 错误直接作为失败返回。
 
 ### 对账与恢复
@@ -973,7 +952,7 @@ checkpoint：长评、日记和读书笔记写 `id`，普通广播写 `id` 与
 - 长评到个人页检查对应条目和标题；
 - 日记用源稿中已保存的 `note.id` 检查对应日记或草稿，不新建另一个草稿；
 - 读书笔记到对应图书的新式笔记列表检查 topic，记录其 `/topic/ID/` 链接且不要直接重发；
-- 普通广播只到个人主页检查；以首页 personal/topic 的 `data-sid` 为广播 ID，不能用 `data-aid` 代替。
+- 普通广播到个人主页检查；程序不再根据首页正文反推或写回 ID。
 
 只有确认服务端没有创建内容后，才可手动重试。日记还有一层更早的恢复信息：发布上下文在公开发布前已经分配稳定 `note_id`，程序会先保存这个 ID，再处理图片和发布。
 

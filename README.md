@@ -10,10 +10,11 @@
 ## 依赖
 
 - GNU/Linux；
-- Emacs 29.1 或更新版本，并带 SQLite、libxml 与 GnuTLS 支持;
+- Emacs 31.1，并带 SQLite、libxml 与 GnuTLS 支持;
 - [`plz`](https://github.com/alphapapa/plz.el) 0.10-pre 或更新版本，用于所有 HTTP 请求；
 - `curl` 可执行程序，作为 `plz` 的底层 HTTP 传输；
 - [`yaml`](https://elpa.gnu.org/packages/yaml.html) 1.2.4 或更新版本，用于 Markdown metadata；
+- [`markdown-mode`](https://jblevins.org/projects/markdown-mode/) 2.7 或更新版本，用于编辑 Markdown 源稿；
 - [`pandoc`](https://pandoc.org/) 3.0 或更新版本，用于转换 Markdown 和 Org 正文；
 - 已在受支持的浏览器 profile 中登录豆瓣。
 
@@ -43,8 +44,10 @@ Firefox Container 还应显式设置对应的 `originAttributes`，普通非 Con
 ### 新建长评源稿
 
 `M-x douban-new-review` 先选择品类，再通过名称搜索或标准条目 URL 选择评论
-对象，最后创建 `.md`、`.markdown` 或 `.org` 源稿。它只生成本地模板；
-父目录不存在时会递归创建，目标文件已存在则直接报错。
+对象，最后创建 `.md`、`.markdown` 或 `.org` 源稿。文件选择器默认从
+`douban-review-directory` 开始；该目录和源稿的父目录不存在时都会递归
+创建，目标文件已存在则直接报错。创建成功后，源稿会在一个新 tab 中打开并
+启用 `douban-mode`。本命令只生成本地模板，不打开网页编辑器。
 
 ### 编辑 metadata
 
@@ -58,8 +61,8 @@ Firefox Container 还应显式设置对应的 `originAttributes`，普通非 Con
 `/annotation/ID/` 写接口。
 
 Markdown 的 `douban:` 必须且只能包含 `review`、`note`、`annotation` 或 `status` 中的
-一个子 mapping。`id`、`topic-id`、`privacy` 等都是相应类型 mapping 内的叶子字段。初次发布
-省略 `id`，新广播也省略 `topic-id`；一旦写出 ID 字段，其值就必须是
+一个子 mapping。`id`、`privacy` 等都是相应类型 mapping 内的叶子字段。初次发布
+省略 `id`；一旦写出 ID 字段，其值就必须是
 非空正整数。
 
 
@@ -67,12 +70,11 @@ Org 使用值为空的 `#+DOUBAN_REVIEW:`、`#+DOUBAN_NOTE:`、
 `#+DOUBAN_ANNOTATION:` 或 `#+DOUBAN_STATUS:` 作为唯一内容类型标记；
 其余字段使用包含类型的完整路径，
 例如 `#+DOUBAN_REVIEW_SUBJECT_ID:`、`#+DOUBAN_NOTE_PRIVACY:` 和
-`#+DOUBAN_STATUS_TOPIC_ID:`。标记本身必须保留空值。
+`#+DOUBAN_STATUS_ID:`。标记本身必须保留空值。
 
-打开受支持的源稿时，`douban-mode` 会自动启用：Markdown 以 YAML front
-matter 中的顶层 `douban:` 为识别标记，Org 以上述任一内容类型标记为识别
-标记。空白源稿或尚未写出完整识别
-标记的残缺源稿也可以手动运行：
+`douban-mode` 不会扫描或自动识别普通 Markdown 和 Org 文件。
+`douban-new-review` 创建的长评源稿会显式启用它；手工创建或重新打开其它
+豆瓣源稿时，按需运行：
 
 ```text
 M-x douban-mode
@@ -154,8 +156,7 @@ Org 在同一个关键字值中使用逗号分隔：
 
 | 字段 | 含义 |
 | --- | --- |
-| `id` | 初次发布时省略；发布后写入公开页面使用的 sid |
-| `topic-id` | personal topic 的 aid；更新 API 使用这个 ID |
+| `id` | 初次发布时省略；发布后写入 personal topic ID，更新 API 使用这个 ID |
 | `explanation-types` | 可选的单项内容说明，见下表 |
 | `anthology-id` | 可选文集 ID；可在字段值处按文集名称补全 |
 
@@ -367,6 +368,7 @@ M-x douban-publish
 | `douban-cookie-browser` | `firefox` | Cookie 来源浏览器 |
 | `douban-cookie-profile-directory` | `nil` | 必须显式设置的 profile 目录 |
 | `douban-firefox-origin-attributes` | `""` | Firefox 普通上下文或 Container 值 |
+| `douban-review-directory` | XDG 文档目录下的 `douban/reviews/` | `douban-new-review` 默认创建源稿的目录 |
 | `douban-default-reply-limit` | `all` | 新建公开读书笔记和广播的回复范围；也用于读书笔记从私密切回公开 |
 | `douban-default-original` | `t` | 长评、读书笔记和普通广播的全局原创声明开关 |
 | `douban-review-send-broadcast` | `nil` | 长评和读书笔记是否发送并保留关联广播 |

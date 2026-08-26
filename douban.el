@@ -5,7 +5,7 @@
 ;; Author: Dzming Li <i@dzming.li>
 ;; Maintainer: Dzming Li <i@dzming.li>
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "29.1") (plz "0.10-pre") (yaml "1.2.4"))
+;; Package-Requires: ((emacs "31.1") (markdown-mode "2.7") (plz "0.10-pre") (yaml "1.2.4"))
 ;; Keywords: convenience, hypermedia, tools
 ;; URL: https://github.com/DzmingLi/douban.el
 ;; SPDX-License-Identifier: GPL-3.0-or-later
@@ -51,10 +51,12 @@
 (require 'mailcap)
 (require 'sqlite)
 (require 'gnutls)
+(require 'xdg)
 
 (declare-function secrets-search-item-paths "secrets"
                   (collection &rest attributes))
 (declare-function secrets-get-secret "secrets" (collection item))
+(declare-function markdown-mode "markdown-mode" ())
 
 (defgroup douban nil
   "在 Emacs 中编辑并发布豆瓣内容。"
@@ -82,6 +84,18 @@
   "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0"
   "豆瓣网页请求使用的 User-Agent。"
   :type 'string
+  :group 'douban)
+
+(defcustom douban-review-directory
+  (file-name-as-directory
+   (expand-file-name
+    "douban/reviews"
+    (or (xdg-user-dir "DOCUMENTS")
+        (expand-file-name "Documents" "~"))))
+  "`douban-new-review' 默认创建长评源稿的目录。
+交互调用新建命令时，如果该目录尚不存在，会自动创建。Lisp 调用显式传入的
+文件路径不受本选项限制。"
+  :type 'directory
   :group 'douban)
 
 (defcustom douban-default-reply-limit 'all
@@ -927,6 +941,82 @@ QUERY 接收数据库和 schema 名；只读查询发生 SQLite 错误时改读�
        '("--disable" "--location" "-L" "--location-trusted")))
     plz-curl-default-args)))
 
+(defconst douban--plz-filter-redirect-status 599
+  "传给 `plz' 响应解析器的临时 HTTP 状态码。
+`plz' 会跳过 301、302、303、307、308 响应头，即使调用方已经禁止 curl
+跟随重定向。传输过滤器先把这些状态码改成这个非重定向状态，待 `plz'
+通过公开的 response API 解析完毕后再还原。")
+
+(defconst douban--http-response-status-line-regexp
+  (concat
+   "\\`HTTP/\\([0-9]+\\(?:\\.[0-9]+\\)?\\)"
+   "[ \t]+\\([0-9][0-9][0-9]\\)"
+   "\\(?:[ \t]+\\([^\r\n]*\\)\\)?\r?\n")
+  "匹配 curl 输出中位于字符串开头的 HTTP 状态行。")
+
+(defun douban--filtered-http-response-prefix (data)
+  "若 DATA 已含完整的最终 HTTP 响应头，返回过滤结果。
+返回值为 (OUTPUT REDIRECT-STATUS)，其中 OUTPUT 可交给 `plz' 解析；若最终
+状态是重定向，OUTPUT 中的状态码暂时改为
+`douban--plz-filter-redirect-status'，REDIRECT-STATUS 是原状态码，否则为
+nil。代理的 CONNECT 响应和 1xx 中间响应保持原样并跳过。响应头尚不完整时
+返回 nil。"
+  (let ((offset 0)
+        result)
+    (while (and (not result) (< offset (length data)))
+      (let ((response (substring data offset)))
+        (if (not (string-match douban--http-response-status-line-regexp response))
+            ;; 状态行仍可能横跨下一次 process filter 调用。
+            (if (string-match-p "[\r\n]" response)
+                ;; 完整的第一行并非 HTTP 状态行，让 plz 按原样报告错误。
+                (setq result (list data nil))
+              (setq offset (length data)))
+          (let* ((status
+                  (string-to-number (match-string 2 response)))
+                 (reason (string-trim (or (match-string 3 response) "")))
+                 (status-start (+ offset (match-beginning 2)))
+                 (status-end (+ offset (match-end 2)))
+                 (header-end
+                  (string-match "\r?\n\r?\n" response)))
+            (if (not header-end)
+                (setq offset (length data))
+              (let ((block-end (+ offset (match-end 0))))
+                (cond
+                 ((or
+                   (and (= status 200)
+                        (string-equal reason "Connection established"))
+                   (<= 100 status 199))
+                 (setq offset block-end))
+                 ((memq status '(301 302 303 307 308))
+                  (setq
+                   result
+                   (list
+                    (concat
+                     (substring data 0 status-start)
+                     (number-to-string douban--plz-filter-redirect-status)
+                     (substring data status-end))
+                    status)))
+                 (t
+                  (setq result (list data nil))))))))))
+    result))
+
+(defun douban--insert-process-output (process output)
+  "把 OUTPUT 追加到 PROCESS 的 buffer。
+这是 `plz' 的公开 `:filter' 接口要求自定义过滤器承担的插入工作。"
+  (when-let* ((buffer (process-buffer process)))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (goto-char (point-max))
+        (insert output)))))
+
+(defun douban--response-with-status (response status)
+  "复制 plz RESPONSE，并把 HTTP 状态码替换为 STATUS。"
+  (make-plz-response
+   :version (plz-response-version response)
+   :status status
+   :headers (plz-response-headers response)
+   :body (plz-response-body response)))
+
 (cl-defun douban--plz-request
     (method url &key body headers (decode t))
   "通过 `plz' 同步请求 URL 并返回响应。
@@ -934,30 +1024,46 @@ METHOD 是大写的方法字符串。BODY 是已经确定的二进制字节字�
 HEADERS 是关联列表。DECODE 为 nil 时保留响应正文的原始字节。HTTP 错误中的
 响应仍作为响应返回；传输错误则保留原始 `plz' condition。"
   (let ((plz-curl-default-args
-         (douban--curl-args-without-redirects)))
-    ;; plz 0.10-pre 会无条件跳过 3xx 头，以配合其默认的 --location。
-    ;; 本包已禁用重定向跟随，因此必须保留唯一的 3xx 响应供调用方核对。
-    (cl-letf
-        (((symbol-function 'plz--skip-redirect-headers)
-          (lambda () nil)))
-      (condition-case err
-          (plz
-           (intern (downcase method))
-           url
-           :headers headers
-           :body body
-           :body-type 'binary
-           :as 'response
-           :decode decode
-           :then 'sync
-           :connect-timeout douban--request-timeout
-           :timeout douban--request-timeout)
-        (plz-error
-         (let ((data (cl-find-if #'plz-error-p (cdr err))))
-           (if-let ((response
-                     (and data (plz-error-response data))))
-               response
-             (signal (car err) (cdr err)))))))))
+         (douban--curl-args-without-redirects))
+        pending-output
+        response-prefix-complete-p
+        redirect-status)
+    (let ((response
+           (condition-case err
+               (plz
+                (intern (downcase method))
+                url
+                :headers headers
+                :body body
+                :body-type 'binary
+                :as 'response
+                :decode decode
+                :then 'sync
+                :filter
+                (lambda (process output)
+                  (if response-prefix-complete-p
+                      (douban--insert-process-output process output)
+                    (setq pending-output
+                          (concat (or pending-output "") output))
+                    (when-let* ((filtered
+                                (douban--filtered-http-response-prefix
+                                 pending-output)))
+                      (setq
+                       response-prefix-complete-p t
+                       redirect-status (cadr filtered))
+                      (douban--insert-process-output process (car filtered))
+                      (setq pending-output nil))))
+                :connect-timeout douban--request-timeout
+                :timeout douban--request-timeout)
+             (plz-error
+              (let ((data (cl-find-if #'plz-error-p (cdr err))))
+                (if-let* ((error-response
+                          (and data (plz-error-response data))))
+                    error-response
+                  (signal (car err) (cdr err))))))))
+      (if redirect-status
+          (douban--response-with-status response redirect-status)
+        response))))
 
 (defun douban--response-set-cookie (session headers)
   "把 HEADERS 中相关的 Set-Cookie 值合并进 SESSION。"
@@ -1009,7 +1115,7 @@ METHOD 是大写的方法字符串。BODY 可以是文本；RAW-BODY 为非 nil 
             cookies))
          (headers
           (append
-           (when-let ((cookie
+           (when-let* ((cookie
                        (and request-cookies
                             (douban--cookie-header request-cookies))))
              (list (cons "Cookie" cookie)))
@@ -1493,12 +1599,8 @@ FIELD 必须出现在 `douban--metadata-value-options' 中。OPTIONAL 非 nil �
      ((:source :id
        :internal :status-id
        :codec id
-       :description "广播 ID；初次发布省略，发布后自动写回"
+       :description "广播 topic ID；初次发布省略，发布后自动写回"
        :nonempty-if-present t)
-      (:source :topic-id
-       :internal :status-topic-id
-       :codec id
-       :description "广播编辑用 topic ID；首次发布后自动写回")
       (:source :explanation-types
        :codec enum
        :description "单项内容说明")
@@ -1562,14 +1664,14 @@ FIELD 必须出现在 `douban--metadata-value-options' 中。OPTIONAL 非 nil �
 
 (defun douban--metadata-source-field (kind internal-field)
   "返回 KIND 中 INTERNAL-FIELD 对应的源稿字段。"
-  (when-let ((descriptor
+  (when-let* ((descriptor
               (douban--metadata-field-descriptor
                kind internal-field)))
     (plist-get descriptor :source)))
 
 (defun douban--metadata-internal-field (kind source-field)
   "返回 KIND 中 SOURCE-FIELD 对应的内部字段。"
-  (when-let ((descriptor
+  (when-let* ((descriptor
               (douban--metadata-source-field-descriptor
                kind source-field)))
     (douban--metadata-descriptor-internal-field
@@ -1731,7 +1833,7 @@ FIELD 必须出现在 `douban--metadata-value-options' 中。OPTIONAL 非 nil �
       (error "douban: 不支持的 metadata 类型 %S" kind))
     (let ((meta (list :kind kind)))
       (when (plist-get spec :title-p)
-        (when-let ((normalized-title
+        (when-let* ((normalized-title
                     (douban--metadata-text
                      "title" title)))
           (setq
@@ -1781,28 +1883,10 @@ FIELD 必须出现在 `douban--metadata-value-options' 中。OPTIONAL 非 nil �
                (plist-get meta :introduction))
               140))
         (error "douban: introduction 不能超过 140 字"))
-      (when (eq kind 'status)
-        (let ((id-present-p
-               (and
-                (plist-member meta :status-id)
-                t))
-              (topic-present-p
-               (and
-                (plist-member meta :status-topic-id)
-                t))
-              (id (plist-get meta :status-id))
-              (topic-id
-               (plist-get meta :status-topic-id)))
-          (unless
-              (and
-               (eq id-present-p topic-present-p)
-               (eq (null id) (null topic-id)))
-            (error
-             "douban: status.id 与 status.topic-id 必须同时存在"))))
       (dolist
           (descriptor
            (douban--metadata-field-descriptors kind))
-        (when-let ((applicability
+        (when-let* ((applicability
                     (plist-get descriptor :applicability)))
           (let ((internal-field
                  (douban--metadata-descriptor-internal-field
@@ -3128,7 +3212,7 @@ end
 
 (defun douban--cached-user-completions (query)
   "返回 QUERY 的已关注用户补全，并在当前 buffer 中缓存。"
-  (if-let ((cached
+  (if-let* ((cached
             (assoc-string
              query douban--user-mention-completion-cache)))
       (cdr cached)
@@ -3141,7 +3225,7 @@ end
 (defun douban-user-mention-completion-at-point ()
   "补全光标前的 Markdown `@QUERY' 为豆瓣原生用户 mention。
 候选只包含当前豆瓣账号已经关注的用户。"
-  (when-let ((bounds (douban--markdown-user-mention-bounds)))
+  (when-let* ((bounds (douban--markdown-user-mention-bounds)))
     (when
         (condition-case nil
             (progn
@@ -3425,14 +3509,14 @@ TOC-HEADINGS 是当前 HTML 文档已经校验的自动目录标题记录。"
 
 (defun douban--node-has-class-p (node class)
   "若 NODE 的 class 属性含有完整的 CLASS token，则返回非 nil。"
-  (when-let ((classes
+  (when-let* ((classes
               (and (consp node) (dom-attr node 'class))))
     (member class (split-string classes "[ \t\r\n]+" t))))
 
 (defun douban--css-property-value (node property)
   "返回 NODE 的内联 CSS 中 PROPERTY 最后一次声明的值。
 属性名不区分大小写；不存在该属性或 `style' 不是字符串时返回 nil。"
-  (when-let ((style
+  (when-let* ((style
               (and
                (consp node)
                (stringp (dom-attr node 'style))
@@ -3628,7 +3712,7 @@ TOC-HEADINGS 是当前 HTML 文档已经校验的自动目录标题记录。"
            "douban: 文章内链接 %s 的可见标题文字重复：%s"
            href text)))
         (dom-set-attribute node 'href (concat "#" text))))
-    (when-let ((marker (car toc-markers)))
+    (when-let* ((marker (car toc-markers)))
       (let* ((depth
               (string-to-number
                (dom-attr
@@ -3674,7 +3758,7 @@ TOC-HEADINGS 是当前 HTML 文档已经校验的自动目录标题记录。"
    (or
     ;; Pandoc 的 Org reader 将 #+begin_center 输出为 class="center"。
     (douban--node-has-class-p node "center")
-    (when-let ((alignment
+    (when-let* ((alignment
                 (douban--css-property-value node "text-align")))
       (string-match-p
        "\\`center\\'"
@@ -3754,7 +3838,7 @@ range 引用该 entity。"
          (text
           (string-trim
            (replace-regexp-in-string
-            "[\t\r\n]+" " " (dom-texts node))))
+            "[\t\r\n]+" " " (dom-inner-text node))))
          (id
           (and
            (string-match regexp title)
@@ -3785,7 +3869,7 @@ range 引用该 entity。"
         (title
          (string-trim
           (replace-regexp-in-string
-           "[ \t\r\n]+" " " (dom-texts node)))))
+           "[ \t\r\n]+" " " (dom-inner-text node)))))
     (unless (douban--http-url-p url)
       (user-error
        "douban: 卡片链接必须是包含 host 的 HTTP(S) URL：%s"
@@ -3889,7 +3973,7 @@ range 引用该 entity。"
                 (list :url href))
                offset length)))))
        ((eq tag 'img)
-        (when-let ((alt
+        (when-let* ((alt
                     (douban--metadata-text
                      "image alt" (dom-attr node 'alt))))
           (douban--block-write block alt)))
@@ -3979,7 +4063,7 @@ DEPTH 是列表深度；CONTEXT 是 `list' 或 `quote'，决定嵌套块的语�
          (write-block
           (node)
           (flush-inline)
-          (if-let ((image (douban--single-image-child node)))
+          (if-let* ((image (douban--single-image-child node)))
               (douban--add-image-block draft image)
             (douban--draft-add-inline-block
              draft type (dom-children node) depth))
@@ -4102,11 +4186,11 @@ CAPTION 可以为 nil；NODE 不是只含一张图片和至多一个图注的 fi
         (caption (cdr parts)))
     (douban--add-image-block
      draft image
-     (and caption (string-trim (dom-texts caption))))))
+     (and caption (string-trim (dom-inner-text caption))))))
 
 (defun douban--walk-figure (draft node)
   "若 NODE 符合标准 Pandoc figure 结构，则转换并写入 DRAFT；否则遍历其子节点。"
-  (if-let ((parts (douban--figure-image-and-caption node)))
+  (if-let* ((parts (douban--figure-image-and-caption node)))
       (douban--add-figure-image-block draft parts)
     (dolist (child (douban--dom-significant-children node))
       (douban--walk-block-node draft child))))
@@ -4124,7 +4208,7 @@ CAPTION 可以为 nil；NODE 不是只含一张图片和至多一个图注的 fi
            (eq (dom-tag child) 'p)
            (not
             (string-empty-p
-             (string-trim (dom-texts child))))
+             (string-trim (dom-inner-text child))))
            (not (dom-by-tag child 'img))
            (not
             (douban--dom-has-descendant-p
@@ -4145,7 +4229,7 @@ CAPTION 可以为 nil；NODE 不是只含一张图片和至多一个图注的 fi
       (let ((tag (and (consp child) (dom-tag child))))
         (cond
          ((eq tag 'p)
-          (if-let ((image (douban--single-image-child child)))
+          (if-let* ((image (douban--single-image-child child)))
               (douban--add-image-block draft image)
             (douban--draft-add-inline-block
              draft "unstyled" (dom-children child) 0
@@ -4158,7 +4242,7 @@ CAPTION 可以为 nil；NODE 不是只含一张图片和至多一个图注的 fi
          ((eq tag 'img)
           (douban--add-image-block draft child))
          ((eq tag 'figure)
-          (if-let ((parts
+          (if-let* ((parts
                     (douban--figure-image-and-caption child)))
               (douban--add-figure-image-block draft parts)
             (user-error
@@ -4193,9 +4277,9 @@ CAPTION 可以为 nil；NODE 不是只含一张图片和至多一个图注的 fi
            (dolist (child (dom-children node))
              (douban--walk-block-node draft child)))
           ('p
-           (if-let ((card (douban--single-card-child node)))
+           (if-let* ((card (douban--single-card-child node)))
                (douban--add-card-block draft card)
-             (if-let ((image (douban--single-image-child node)))
+             (if-let* ((image (douban--single-image-child node)))
                  (douban--add-image-block draft image)
                (douban--draft-add-inline-block
                 draft "unstyled" (dom-children node)))))
@@ -4208,7 +4292,7 @@ CAPTION 可以为 nil；NODE 不是只含一张图片和至多一个图注的 fi
           ('pre
            (let ((block
                   (douban--draft-add-block draft "code-block")))
-             (douban--block-write block (dom-texts node))))
+             (douban--block-write block (dom-inner-text node))))
           ('figure
            (douban--walk-figure draft node))
           ('img
@@ -4956,11 +5040,11 @@ FILE-NAME、FILE-MIME 和 FILE-BYTES 描述可选文件。
 
 (defun douban--image-source (source base-directory)
   "解析 SOURCE，并返回其上传描述 plist。"
-  (if-let ((data-image (douban--decode-image-data-url source)))
+  (if-let* ((data-image (douban--decode-image-data-url source)))
       (list
        :mime (car data-image)
        :bytes (cdr data-image))
-    (if-let ((path (douban--local-image-path source base-directory)))
+    (if-let* ((path (douban--local-image-path source base-directory)))
         (let* ((bytes (douban--read-file-bytes path))
                (mime (mailcap-file-name-to-mime-type path)))
           (list
@@ -5068,7 +5152,7 @@ CDN 图片仍须先交给抓图端点注册。"
                 (message "douban: 上传图片...")
                 (setq
                  photo
-                 (if-let ((bytes (plist-get descriptor :bytes)))
+                 (if-let* ((bytes (plist-get descriptor :bytes)))
                      (douban--upload-image-bytes
                       session bytes
                       (plist-get descriptor :mime))
@@ -5095,7 +5179,7 @@ CDN 图片仍须先交给抓图端点注册。"
   "更新已有 topic 内容的端点格式。")
 
 (defconst douban--status-home-url "https://www.douban.com/"
-  "发布广播的网页来源与发布后对账页面。")
+  "广播发布页与登录用户首页。")
 
 (defconst douban--status-delete-endpoint
   "https://www.douban.com/j/status/delete"
@@ -5313,77 +5397,6 @@ STATE；回复范围创建时使用全局默认值，更新时保留现有设置
      :null-object :json-null
      :false-object :json-false)))
 
-(defun douban--status-match-text (text)
-  "把广播 TEXT 规范化为只用于发布后页面对账的文本。"
-  (string-trim
-   (replace-regexp-in-string
-    "[ \t\r\n ]+" " " text)))
-
-(defun douban--status-item-text (item)
-  "返回广播 DOM 节点 ITEM 中用于对账的纯文本。"
-  (when-let ((quote (car (dom-by-tag item 'blockquote))))
-    (let ((text (douban--status-match-text
-                 (dom-texts quote))))
-      (unless (string-empty-p text)
-        text))))
-
-(defun douban--draft-reconcile-text (raw)
-  "返回 RAW 中非原子区块的广播对账文本，空正文返回 nil。"
-  (let ((text
-         (mapconcat
-          (lambda (block)
-            (if (equal (plist-get block :type) "atomic")
-                ""
-              (plist-get block :text)))
-          (append (plist-get raw :blocks) nil)
-          "\n")))
-    (setq text (douban--status-match-text text))
-    (unless (string-empty-p text) text)))
-
-(defun douban--status-home-result (html raw &optional topic-id)
-  "在首页 HTML 中查找 RAW 对应的唯一个人广播。
-TOPIC-ID 非 nil 时按 personal topic 的 data-aid 对账，否则只按非原子正文。
-返回的 ID 是 status sid；topic id 只作为附加信息保留。"
-  (cl-labels
-      ((page-id
-        (value)
-        (let ((value
-               (and (stringp value) (string-trim value))))
-          (and
-           value
-           (string-match-p "\\`[1-9][0-9]*\\'" value)
-           value))))
-    (let ((text (douban--draft-reconcile-text raw))
-          matches)
-      (dolist
-          (item
-           (dom-by-class
-            (douban--parse-html html) "status-item"))
-        (when
-            (and
-             (equal (dom-attr item 'data-atype)
-                    "personal/topic")
-             (or topic-id text))
-          (let ((uid (page-id (dom-attr item 'data-uid)))
-                (sid (page-id (dom-attr item 'data-sid)))
-                (aid (page-id (dom-attr item 'data-aid))))
-            (when
-                (and
-                 uid sid aid
-                 (if topic-id
-                     (equal aid topic-id)
-                   (equal (douban--status-item-text item) text)))
-              (push
-               (list
-                :id sid
-                :url
-                (format
-                 "https://www.douban.com/people/%s/status/%s/"
-                 uid sid)
-                :topic-id aid)
-               matches)))))
-      (and (= (length matches) 1) (car matches)))))
-
 (defun douban--review-broadcast-sid (html review-id)
   "从首页 HTML 返回唯一对应 REVIEW-ID 的长评广播 sid。
 只接受网页标记为 review activity 的完整正整数标识；没有唯一匹配时返回
@@ -5467,43 +5480,13 @@ nil，以免误删无关广播。"
     (message "douban: 已删除评论对应广播 %s" sid)
     sid))
 
-(defun douban--status-reconcile (session raw &optional topic-id)
-  "发布后使用 SESSION 在首页核对 RAW，并返回广播 sid 与 URL。
-TOPIC-ID 存在时优先对应首页 data-aid。"
-  (let* ((ck (douban--session-ck session))
-         (home-session
-          (douban--browser-session
-           'status douban--status-home-url ck))
-         (response
-          (douban--http
-           "GET" douban--status-home-url
-           :session home-session
-           :extra-headers
-           '(("Accept" . "text/html,application/xhtml+xml")
-             ("Cache-Control" . "no-cache"))))
-         (status (plist-get response :status))
-         (result
-          (and
-           (<= 200 status 299)
-           (douban--status-home-result
-            (plist-get response :body) raw topic-id))))
-    (or
-     result
-     (if topic-id
-         (error
-          "首页 HTTP %s 没有唯一匹配 topic id %s 的 personal/topic 广播"
-          status topic-id)
-       (error
-        "首页 HTTP %s 没有唯一匹配正文的 personal/topic 广播"
-        status)))))
-
 (defun douban--status-result-not-checkpointed (detail)
-  "以 DETAIL 报告广播已提交但无法写回 sid。"
+  "以 DETAIL 报告广播已提交但无法写回 topic ID。"
   (signal
    'douban-published-but-not-checkpointed
    (list
     (concat
-     "豆瓣已经接受广播发布请求，但无法从首页唯一确认 status sid，"
+     "豆瓣已经接受广播发布请求，但响应中没有合法的 topic ID，"
      "因此没有写回源稿。请到自己的豆瓣主页记录广播链接，不要重复发布。"
      "原错误：" detail))))
 
@@ -5532,8 +5515,8 @@ CREATE-P 非 nil 时，除 408 外的明确 4xx 表示请求被拒绝；其他�
        "douban: %s失败（HTTP %s）：%s"
        label status detail)))))
 
-(defun douban--status-create-result (response session raw)
-  "校验广播创建 RESPONSE，并用 SESSION 对账 RAW 的 sid。"
+(defun douban--status-create-result (response)
+  "校验广播创建 RESPONSE，并返回响应中的 topic ID。"
   (douban--require-mutation-success
    response t "广播发布"
    "请先到自己的豆瓣主页检查。")
@@ -5544,18 +5527,11 @@ CREATE-P 非 nil 时，除 408 外的明确 4xx 表示请求被拒绝；其他�
            (douban--value-string
             (plist-get json :id)))))
     (unless
-        (and
-         topic-id
-         (string-match-p "\\`[1-9][0-9]*\\'" topic-id))
-      (setq topic-id nil))
-    (condition-case err
-        (progn
-          ;; 当前网页编辑器在成功后也会留出约 300ms 再读取首页。
-          (sleep-for 0.3)
-          (douban--status-reconcile session raw topic-id))
-      ((error quit)
-       (douban--status-result-not-checkpointed
-        (error-message-string err))))))
+        (and topic-id
+             (string-match-p "\\`[1-9][0-9]*\\'" topic-id))
+      (douban--status-result-not-checkpointed
+       (douban--response-detail response)))
+    (list :id topic-id)))
 
 (defun douban--status-update-result (response meta)
   "校验广播更新 RESPONSE，并返回 META 中已有的广播标识。"
@@ -5567,8 +5543,7 @@ CREATE-P 非 nil 时，除 408 外的明确 4xx 表示请求被拒绝；其他�
       (error
        "douban: 广播更新返回空数据，无法确认更新成功"))
     (list
-     :id (plist-get meta :status-id)
-     :topic-id (plist-get meta :status-topic-id))))
+     :id (plist-get meta :status-id))))
 
 (defun douban--javascript-truthy-response-body-p (body)
   "若 BODY 对应 JavaScript 中的 truthy 响应数据，则返回非 nil。"
@@ -5667,7 +5642,7 @@ CREATE-P 非 nil 时，除 408 外的明确 4xx 表示请求被拒绝；其他�
 (defun douban--status-sessions (meta images-p)
   "根据 META 返回普通广播的 `(API-SESSION . UPLOAD-SESSION)'。
 已有广播总会读取编辑状态；IMAGES-P 非 nil 时返回独立的网页上传会话。"
-  (let* ((topic-id (plist-get meta :status-topic-id))
+  (let* ((topic-id (plist-get meta :status-id))
          (referer
           (if topic-id
               (format "https://www.douban.com/topic/%s/edit" topic-id)
@@ -5687,7 +5662,7 @@ CREATE-P 非 nil 时，除 408 外的明确 4xx 表示请求被拒绝；其他�
 (defun douban--submit-status (meta session raw)
   "通过 SESSION 根据 META 和 RAW 创建或更新普通豆瓣广播。
 创建请求的结果不确定时绝不重试；更新请求只写入 META 指向的原广播。"
-  (let* ((topic-id (plist-get meta :status-topic-id))
+  (let* ((topic-id (plist-get meta :status-id))
          (endpoint
           (if topic-id
               (format
@@ -5719,8 +5694,7 @@ CREATE-P 非 nil 时，除 408 外的明确 4xx 表示请求被拒绝；其他�
             "确认没有新广播后再重试。"))))
     (if topic-id
         (douban--status-update-result response meta)
-      (douban--status-create-result
-       response session raw))))
+      (douban--status-create-result response))))
 
 ;;;; Book annotation mutation
 
@@ -5962,10 +5936,10 @@ nil，不影响读书笔记本身的创建或更新。"
             (append
              payload
              (list :video_info (plist-get state :video-info)))))
-    (when-let ((hobbit-tag (plist-get state :hobbit-tag)))
+    (when-let* ((hobbit-tag (plist-get state :hobbit-tag)))
       (setq payload
             (append payload (list :hobbit_tag hobbit-tag))))
-    (when-let ((anthology-id (plist-get state :anthology-id)))
+    (when-let* ((anthology-id (plist-get state :anthology-id)))
       (setq payload
             (append payload (list :anthology_id anthology-id))))
     (unless (string-empty-p image-ids)
@@ -6152,7 +6126,7 @@ nil，不影响读书笔记本身的创建或更新。"
                    :null-object :json-null
                    :false-object :json-false))
             (cons "review[rating]"
-                  (if-let ((rating (plist-get meta :rating)))
+                  (if-let* ((rating (plist-get meta :rating)))
                       (number-to-string rating)
                     ""))
             (cons "review[spoiler]"
@@ -6173,7 +6147,7 @@ nil，不影响读书笔记本身的创建或更新。"
            (douban--session-state-get session :app-name)
            "game")
           (let ((rtype
-                 (if-let ((source-rtype (plist-get meta :rtype)))
+                 (if-let* ((source-rtype (plist-get meta :rtype)))
                      (douban--metadata-protocol-value
                       :rtype source-rtype)
                    (douban--session-state-get
@@ -6485,7 +6459,7 @@ UPDATE-P 非 nil 表示这次写操作更新的是已发布日记。"
 
 (defun douban--refresh-file-buffer (file)
   "刷新正在访问 FILE 且未修改的缓冲区。"
-  (when-let ((buffer
+  (when-let* ((buffer
               (find-buffer-visiting (expand-file-name file))))
     (with-current-buffer buffer
       (unless (buffer-modified-p)
@@ -7125,7 +7099,7 @@ VALUE-PRESENT-P 为 nil 时只记录字段存在。重复字段沿用第一次�
 
 (defun douban--markdown-container-child-indentation (container)
   "返回 Markdown 类型 CONTAINER 的直接子字段缩进。"
-  (if-let ((cached
+  (if-let* ((cached
             (plist-get container :child-indentation)))
       cached
     (let ((parent
@@ -7286,7 +7260,7 @@ ORIGIN 是原光标位置，LINE-START 与 LINE-END 是当前行边界。"
               (douban--markdown-platform-item-parent-line
                container line-start item-indentation)))
         (when parent-line
-          (when-let
+          (when-let*
               ((bounds
                 (douban--markdown-scalar-context
                  replace-start line-end origin)))
@@ -7315,7 +7289,7 @@ ORIGIN 是原光标位置，LINE-START 与 LINE-END 是当前行边界。"
           (line-end (line-end-position)))
       (save-excursion
         (goto-char line-start)
-        (when-let ((region
+        (when-let* ((region
                     (douban--markdown-douban-buffer-region)))
           (let* ((root-indentation
                   (douban--markdown-direct-metadata-indentation
@@ -7337,7 +7311,7 @@ ORIGIN 是原光标位置，LINE-START 与 LINE-END 是当前行边界。"
                  (platform-item-context
                   (and
                    container
-                   (when-let
+                   (when-let*
                        ((info
                          (douban--markdown-platform-item-context
                           container origin line-start line-end)))
@@ -7414,7 +7388,7 @@ ORIGIN 是原光标位置，LINE-START 与 LINE-END 是当前行边界。"
                    colon-p
                    field
                    (<= replace-start origin))
-                  (when-let
+                  (when-let*
                       ((bounds
                         (douban--markdown-scalar-context
                          replace-start line-end origin)))
@@ -7652,21 +7626,21 @@ ORIGIN 是原光标位置，LINE-START 与 LINE-END 是当前行边界。"
 
 (defun douban--metadata-context-fields (info)
   "返回 INFO 所在类型容器已有的内部 metadata 字段。"
-  (when-let ((index (plist-get info :source-index))
+  (when-let* ((index (plist-get info :source-index))
              (kind (plist-get info :kind)))
     (douban--metadata-source-index-fields
      index kind)))
 
 (defun douban--metadata-context-field-value (info field)
   "返回 INFO 类型容器中内部 metadata FIELD 的简单标量值。"
-  (when-let ((index (plist-get info :source-index))
+  (when-let* ((index (plist-get info :source-index))
              (kind (plist-get info :kind)))
     (douban--metadata-source-index-field-value
      index kind field)))
 
 (defun douban--metadata-field-applicable-p (info field)
   "内部 FIELD 适用于 INFO 所在源稿时返回非 nil。"
-  (when-let ((descriptor
+  (when-let* ((descriptor
               (douban--metadata-field-descriptor
                (plist-get info :kind) field)))
     (let ((applicability
@@ -7696,7 +7670,7 @@ ORIGIN 是原光标位置，LINE-START 与 LINE-END 是当前行边界。"
      (let ((current
             (plist-get info :current-kind))
            (present
-            (when-let
+            (when-let*
                 ((index
                   (plist-get info :source-index)))
               (douban--metadata-source-index-kinds
@@ -7762,7 +7736,7 @@ ORIGIN 是原光标位置，LINE-START 与 LINE-END 是当前行边界。"
 
 (defun douban--metadata-object-annotation (object info)
   "返回 INFO 中类型或字段 OBJECT 的补全旁注。"
-  (when-let ((description
+  (when-let* ((description
               (pcase (plist-get info :slot)
                 ('kind
                  (plist-get
@@ -7785,7 +7759,7 @@ ORIGIN 是原光标位置，LINE-START 与 LINE-END 是当前行边界。"
        (eq status 'finished)
        (eq (plist-get info :format) 'markdown)
        (eq (plist-get info :slot) 'field))
-    (when-let ((container
+    (when-let* ((container
                 (plist-get info :container)))
       (save-excursion
         (goto-char
@@ -7818,7 +7792,7 @@ ORIGIN 是原光标位置，LINE-START 与 LINE-END 是当前行边界。"
        :exclusive t
        :annotation-function
        (lambda (candidate)
-         (when-let ((entry
+         (when-let* ((entry
                      (assoc-string
                       candidate entries)))
            (douban--metadata-object-annotation
@@ -7830,11 +7804,11 @@ ORIGIN 是原光标位置，LINE-START 与 LINE-END 是当前行边界。"
 
 (defun douban--metadata-value-annotation (field candidate)
   "返回 FIELD 值补全 CANDIDATE 的说明旁注。"
-  (when-let ((option
+  (when-let* ((option
               (assoc-string
                candidate
                (douban--metadata-options-for-field field))))
-    (when-let ((annotation
+    (when-let* ((annotation
                 (plist-get (cdr option) :annotation)))
       (concat "  " annotation))))
 
@@ -8449,7 +8423,7 @@ EXCLUDED 是当前项以外已经选择的平台 ID，QUERY 是前端输入。"
 只把对应的协议 ID 写入源稿。"
   (save-restriction
     (widen)
-    (when-let ((info (douban--metadata-context)))
+    (when-let* ((info (douban--metadata-context)))
       (pcase (plist-get info :slot)
         ((or 'kind 'field)
          (douban--metadata-field-capf info))
@@ -8475,64 +8449,6 @@ EXCLUDED 是当前项以外已经选择的平台 ID，QUERY 是前端输入。"
        (and
         (derived-mode-p 'org-mode)
         'org)))))
-
-(defun douban--markdown-source-marker-p ()
-  "当前 Markdown front matter 有顶层 `douban:' 时返回非 nil。
-本函数只做宽松结构检测，不要求 metadata 完整或有效。"
-  (save-excursion
-    (goto-char (point-min))
-    (when (looking-at "---[ \t]*\r?$")
-      (forward-line 1)
-      (let ((end
-             (save-excursion
-               (if
-                   (re-search-forward
-                    "^---[ \t]*\r?$" nil t)
-                   (line-beginning-position)
-                 (point-max))))
-            (case-fold-search nil))
-        (re-search-forward
-         "^douban[ \t]*:" end t)))))
-
-(defun douban--org-source-marker-p ()
-  "当前 Org buffer 有文档级豆瓣内容类型标记时返回非 nil。
-先用文本搜索定位候选，只对命中的行读取 Org 上下文。"
-  (require 'org-element)
-  (save-excursion
-    (goto-char (point-min))
-    (let ((case-fold-search t)
-          found)
-      (while
-          (and
-           (not found)
-           (re-search-forward
-            (concat
-             "^#\\+DOUBAN_"
-             "\\(?:REVIEW\\|NOTE\\|ANNOTATION\\|STATUS\\)"
-             ":[ \t]*\r?$")
-            nil t))
-        (let ((next (match-end 0)))
-          (goto-char (match-beginning 0))
-          (let ((node (org-element-context)))
-            (when
-                (and
-                 (eq (org-element-type node) 'keyword)
-                 (not
-                  (douban--org-metadata-blocked-node-p
-                   node)))
-              (setq found t)))
-          (goto-char next)))
-      found)))
-
-(defun douban--source-marker-p ()
-  "当前 buffer 可宽松识别为豆瓣源稿时返回非 nil。"
-  (pcase (douban--source-editing-format)
-    ('markdown
-     (douban--markdown-source-marker-p))
-    ('org
-     (condition-case nil
-         (douban--org-source-marker-p)
-       (error nil)))))
 
 (defvar douban-mode-map (make-sparse-keymap)
   "`douban-mode' 的按键映射。
@@ -8593,17 +8509,6 @@ EXCLUDED 是当前项以外已经选择的平台 ID，QUERY 是前端输入。"
          #'douban--reset-completion-caches
          nil t))
     (douban--disable-editing-support)))
-
-(defun douban--maybe-enable-mode ()
-  "在宽松识别出的豆瓣源稿中启用 `douban-mode'。"
-  (when
-      (and
-       (not douban-mode)
-       (douban--source-marker-p))
-    (douban-mode 1)))
-
-(add-hook 'markdown-mode-hook #'douban--maybe-enable-mode)
-(add-hook 'org-mode-hook #'douban--maybe-enable-mode)
 
 (defun douban--parse-subject (input)
   "把规范条目 URL INPUT 解析为 ID 和类型 metadata。"
@@ -8894,7 +8799,8 @@ SUBJECT-TYPE 是 `book'、`movie'、`tv'、`music' 或 `game'。INPUT 为 nil
         "\n")))))
 
 (defun douban--create-source-file (file meta)
-  "为 META 创建源稿 FILE；缺少的父目录会一并创建。"
+  "为 META 创建源稿 FILE，并在新 tab 中启用 `douban-mode'。
+缺少的父目录会一并创建。"
   (let* ((file (expand-file-name file))
          (format (douban--require-source-format file))
          (content (douban--new-source-content format meta)))
@@ -8905,17 +8811,38 @@ SUBJECT-TYPE 是 `book'、`movie'、`tv'、`music' 或 `game'。INPUT 为 nil
           (write-region
            (point-min) (point-max) file
            nil 'silent nil 'excl)))
-    (find-file file)
+    (let ((buffer (find-file-noselect file)))
+      (with-current-buffer buffer
+        (unless (douban--source-editing-format)
+          (pcase format
+            ('markdown
+             (require 'markdown-mode)
+             (markdown-mode))
+            ('org
+             (require 'org)
+             (org-mode))))
+        (douban-mode 1))
+      (tab-new)
+      (switch-to-buffer buffer))
     (message "douban: 已创建 %s" file)
     file))
+
+(defun douban--ensure-review-directory ()
+  "返回规范化的 `douban-review-directory'，并确保它存在。"
+  (let ((directory
+         (file-name-as-directory
+          (expand-file-name douban-review-directory))))
+    (make-directory directory t)
+    directory))
 
 ;;;###autoload
 (defun douban-new-review (subject-type subject file)
   "创建豆瓣长评源稿 FILE。
 SUBJECT-TYPE 是 `book'、`movie'、`tv'、`music' 或 `game'，SUBJECT 是
 对应的规范豆瓣条目或游戏 URL。交互调用时先选择 SUBJECT-TYPE，再输入
-规范 URL 或豆瓣条目名称。FILE 的扩展名决定使用 Markdown 还是 Org。
-本命令只创建本地模板，不打开网页编辑器，也不推断标题。"
+规范 URL 或豆瓣条目名称，并从 `douban-review-directory' 读取 FILE。
+FILE 的扩展名决定使用 Markdown 还是 Org。创建成功后在新 tab 中打开源稿并
+启用 `douban-mode'。本命令不打开网页编辑器，也不推断标题。"
   (interactive
    (let ((subject-type (douban--read-review-subject-type)))
      (list
@@ -8923,7 +8850,7 @@ SUBJECT-TYPE 是 `book'、`movie'、`tv'、`music' 或 `game'，SUBJECT 是
       (douban-search-subject subject-type)
       (read-file-name
        "评论源稿（.md/.markdown/.org）: "
-       default-directory nil nil))))
+       (douban--ensure-review-directory) nil nil))))
   (let* ((parsed
           (douban--review-subject-from-url
            subject-type subject))
@@ -9068,11 +8995,6 @@ CC 声明不参与非空或最低字数校验。"
          (content-id (plist-get result :id))
          (content-url (plist-get result :url)))
     (setq meta (plist-put meta id-field content-id))
-    (when (eq kind 'status)
-      (setq meta
-            (plist-put
-             meta :status-topic-id
-             (plist-get result :topic-id))))
     (condition-case err
         (douban--checkpoint-meta file meta)
       (error
@@ -9081,17 +9003,16 @@ CC 声明不参与非空或最低字数校验。"
         (list
          (format
           (concat
-           "%s已经发布为 %s（ID %s%s），但源稿 metadata 写回失败。"
+           "%s已经发布%s（ID %s），但源稿 metadata 写回失败。"
            "请立即手动记录该 ID，修复文件后再操作；"
            "不要重新创建。原错误：%s")
-          label content-url content-id
-          (if (eq kind 'status)
-              (format
-               "，topic ID %s"
-               (plist-get result :topic-id))
-            "")
+          label
+          (if content-url (format "为 %s" content-url) "")
+          content-id
           (error-message-string err))))))
-    (message "douban: 已发布 %s" content-url)
+    (if content-url
+        (message "douban: 已发布 %s" content-url)
+      (message "douban: 已发布%s（ID %s）" label content-id))
     content-id))
 
 (defun douban--publish-note-file (file meta)
@@ -9193,7 +9114,7 @@ CC 声明不参与非空或最低字数校验。"
          (lambda (raw)
            (douban--validate-content-draft
             raw "普通广播"))))
-       (update-p (plist-get meta :status-topic-id))
+       (update-p (plist-get meta :status-id))
        (images-p (douban--draft-has-image-p raw)))
     (pcase-let
         ((`(,api-session . ,upload-session)

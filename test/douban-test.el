@@ -18,7 +18,7 @@
          (progn ,@body)
        (when (file-exists-p file)
          (delete-file file))
-       (when-let ((buffer (find-buffer-visiting file)))
+       (when-let* ((buffer (find-buffer-visiting file)))
          (kill-buffer buffer)))))
 
 (defun douban-test--long-text ()
@@ -182,7 +182,7 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
 
 (defun douban-test--block-first-entity (raw block)
   "返回 RAW 中 BLOCK 的第一个 entity；没有 range 时返回 nil。"
-  (when-let ((range
+  (when-let* ((range
               (and
                (> (length (plist-get block :entityRanges)) 0)
                (aref (plist-get block :entityRanges) 0))))
@@ -306,10 +306,9 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
           :subject-id "2"
           :title "读书笔记标题"
           :annotation-privacy "private"
-          :explanation-types "personal-opinion")
+         :explanation-types "personal-opinion")
          (:kind status
-          :status-id "33"
-          :status-topic-id "303"
+          :status-id "303"
           :anthology-id "44"
           :explanation-types "repost")))
     (let* ((title (plist-get meta :title))
@@ -818,6 +817,7 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
 (ert-deftest douban-test-new-review-reuses-search-subject ()
   (let* ((directory (make-temp-file "douban-review-url-" t))
          (file (expand-file-name "剧集长评.md" directory))
+         (douban-review-directory directory)
          events)
     (unwind-protect
         (progn
@@ -837,25 +837,34 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
                   (push 'subject events)
                   "https://movie.douban.com/subject/25754848/"))
                ((symbol-function 'read-file-name)
-                (lambda (&rest _arguments)
+                (lambda (_prompt default-directory &rest _arguments)
+                  (should
+                   (equal
+                    default-directory
+                    (file-name-as-directory directory)))
                   (push 'file events)
-                  file)))
+                  file))
+               ((symbol-function 'tab-new)
+                (lambda () (push 'tab events))))
             (call-interactively #'douban-new-review))
           (should
-           (equal (nreverse events) '(type subject file)))
+           (equal (nreverse events) '(type subject file tab)))
+          (should (equal (buffer-file-name) file))
+          (should douban-mode)
           (let ((meta (douban--read-meta file)))
             (should
              (equal
               (plist-get meta :subject-id) "25754848"))
             (should
              (equal (plist-get meta :subject-type) "tv"))))
-      (when-let ((buffer (find-buffer-visiting file)))
+      (when-let* ((buffer (find-buffer-visiting file)))
         (kill-buffer buffer))
       (ignore-errors (delete-directory directory t)))))
 
 (ert-deftest douban-test-searched-subject-title-stays-out-of-review-source ()
   (let* ((directory (make-temp-file "douban-search-title-" t))
          (file (expand-file-name "文件名也不是标题.md" directory))
+         (douban-review-directory directory)
          events)
     (unwind-protect
         (progn
@@ -887,9 +896,15 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
                     (push 'subject events)
                     (caar collection))))
                ((symbol-function 'read-file-name)
-                (lambda (&rest _arguments)
+                (lambda (_prompt default-directory &rest _arguments)
+                  (should
+                   (equal
+                    default-directory
+                    (file-name-as-directory directory)))
                   (push 'file events)
-                  file)))
+                  file))
+               ((symbol-function 'tab-new)
+                (lambda () (push 'tab events))))
             (call-interactively #'douban-new-review))
           (should
            (equal
@@ -898,7 +913,9 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
               input
               (search "琅琊榜" "tv")
               subject
-              file)))
+              file
+              tab)))
+          (should douban-mode)
           (let ((meta (douban--read-meta file))
                 (text
                  (with-temp-buffer
@@ -915,7 +932,7 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
             (should-not
              (string-match-p
               (regexp-quote "文件名也不是标题") text))))
-      (when-let ((buffer (find-buffer-visiting file)))
+      (when-let* ((buffer (find-buffer-visiting file)))
         (kill-buffer buffer))
       (ignore-errors (delete-directory directory t)))))
 
@@ -3310,13 +3327,14 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
 (ert-deftest douban-test-plz-request-disables-redirects-and-keeps-response ()
   (let* ((response
           (make-plz-response
-           :status 302
+           :version 2
+           :status douban--plz-filter-redirect-status
            :headers '(("location" . "/people/alice/"))
            :body "not followed"))
          (plz-curl-default-args
           '("--silent" "--location" "-L" "--location-trusted"
             "--compressed" "--disable"))
-         method url options curl-arguments skipped-redirect)
+         method url options curl-arguments filtered-output)
     (cl-letf
         (((symbol-function 'plz)
           (lambda (request-method request-url &rest request-options)
@@ -3324,25 +3342,61 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
              method request-method
              url request-url
              options request-options
-             curl-arguments (copy-sequence plz-curl-default-args)
-             skipped-redirect (plz--skip-redirect-headers))
+             curl-arguments (copy-sequence plz-curl-default-args))
+            (let* ((buffer (generate-new-buffer " *douban-filter-test*"))
+                   (process
+                    (make-pipe-process
+                     :name "douban-filter-test"
+                     :buffer buffer
+                     :noquery t))
+                   (filter (plist-get request-options :filter)))
+              (unwind-protect
+                  (progn
+                    ;; 同时覆盖代理响应以及横跨两个 chunk 的状态行。
+                    (funcall
+                     filter process
+                     (concat
+                      "HTTP/1.1 200 Connection established\r\n\r\n"
+                      "HTTP/2 30"))
+                    (funcall
+                     filter process
+                     (concat
+                      "2 \r\nlocation: /people/alice/\r\n"
+                      "content-length: 12\r\n\r\nnot followed"))
+                    (setq
+                     filtered-output
+                     (with-current-buffer buffer (buffer-string))))
+                (when (process-live-p process)
+                  (delete-process process))
+                (kill-buffer buffer)))
             (signal
              'plz-http-error
              (list
               "HTTP error"
               (make-plz-error :response response))))))
       (should
-       (eq
-        (douban--plz-request
-         "GET" douban--ck-bootstrap-url
-         :headers '(("Accept" . "text/html")))
-        response)))
+       (let ((actual
+              (douban--plz-request
+               "GET" douban--ck-bootstrap-url
+               :headers '(("Accept" . "text/html")))))
+         (and
+          (= (plz-response-status actual) 302)
+          (= (plz-response-version actual) 2)
+          (equal (plz-response-headers actual)
+                 '(("location" . "/people/alice/")))
+          (equal (plz-response-body actual) "not followed")))))
     (should (eq method 'get))
     (should (equal url douban--ck-bootstrap-url))
     (should
      (equal curl-arguments
             '("--disable" "--silent" "--compressed")))
-    (should-not skipped-redirect)
+    (should
+     (equal
+      filtered-output
+      (concat
+       "HTTP/1.1 200 Connection established\r\n\r\n"
+       "HTTP/2 599 \r\nlocation: /people/alice/\r\n"
+       "content-length: 12\r\n\r\nnot followed")))
     (should
      (equal
       (plist-get options :headers)
@@ -3351,12 +3405,27 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
     (should (eq (plist-get options :as) 'response))
     (should (eq (plist-get options :decode) t))
     (should (eq (plist-get options :then) 'sync))
+    (should (functionp (plist-get options :filter)))
     (should
      (= (plist-get options :connect-timeout)
         douban--request-timeout))
     (should
      (= (plist-get options :timeout)
         douban--request-timeout))))
+
+(ert-deftest douban-test-http-response-filter-preserves-nonredirects ()
+  (should-not
+   (douban--filtered-http-response-prefix
+    "HTTP/2 20"))
+  (let ((response
+         (concat
+          "HTTP/1.1 100 Continue\r\n\r\n"
+          "HTTP/2 403 Forbidden\r\ncontent-type: text/plain\r\n\r\n"
+          "denied")))
+    (should
+     (equal
+      (douban--filtered-http-response-prefix response)
+      (list response nil)))))
 
 (ert-deftest douban-test-http-rejects-redirect-and-encodes-utf8-json ()
   (let ((text "{\"text\":\"换行\\n😀\"}")
@@ -4581,7 +4650,7 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
      (equal
       (mapcar
        (lambda (block)
-         (when-let ((entity
+         (when-let* ((entity
                      (douban-test--block-first-entity raw block)))
            (plist-get (plist-get entity :data) :url)))
        (list (nth 1 blocks) (nth 3 blocks)))
@@ -5692,8 +5761,7 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
           (:subject-id "1" :subject-type "book" :id "11"))
          (:note :note-id (:id "22"))
          (:status :status-id
-          (:id "33"
-           :topic-id "303"))))
+          (:id "303"))))
     (let ((meta
            (douban--meta-from-plist
             (list (car case) (nth 2 case))
@@ -6368,8 +6436,7 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
       "---\n"
       "douban:\n"
       "  status:\n"
-      "    id: '73'\n"
-      "    topic-id: '703'\n"
+      "    id: '703'\n"
       "    anthology-id:\n"
       "---\n\n"
       "广播正文\n"))
@@ -6378,85 +6445,16 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
     (should
      (douban-metadata-completion-at-point))))
 
-(ert-deftest douban-test-douban-mode-auto-detects-markdown-front-matter ()
-  (dolist
-      (case
-       '(("/tmp/review.md"
-          "---\ntitle: 未完成长评\ndouban:\n  review:\n---\n")
-         ("/tmp/note.markdown"
-          "---\ndouban:\n  note:\n---\n")
-         ("/tmp/annotation.md"
-          "---\ntitle: 读书笔记\ndouban:\n  annotation:\n---\n")))
-    (with-temp-buffer
-      (setq buffer-file-name (car case))
-      (insert (cadr case))
-      (setq major-mode 'markdown-mode)
-      (run-hooks 'markdown-mode-hook)
-      (should douban-mode)
-      (should
-       (memq
-        #'douban-metadata-completion-at-point
-        completion-at-point-functions))
-      (should
-       (memq
-        #'douban-user-mention-completion-at-point
-        completion-at-point-functions))))
-  (dolist
-      (source
-       '("---\ntitle: 普通文档\n---\n正文\n"
-         "---\ncontainer:\n  douban:\n---\n"
-         "---\nsummary: \"douban:\"\n---\n"
-         "---\ntitle: 普通文档\n---\ndouban:\n"
-         "正文中的 douban:\n"))
-    (with-temp-buffer
-      (setq buffer-file-name "/tmp/ordinary.md")
-      (insert source)
-      (setq major-mode 'markdown-mode)
-      (run-hooks 'markdown-mode-hook)
-      (should-not douban-mode)
-      (should-not
-       (memq
-        #'douban-metadata-completion-at-point
-        completion-at-point-functions))
-      (should-not
-       (memq
-        #'douban-user-mention-completion-at-point
-        completion-at-point-functions)))))
-
-(ert-deftest douban-test-douban-mode-auto-detects-document-org-kind ()
-  (dolist
-      (source
-       '("#+DOUBAN_REVIEW:\n"
-         "#+douban_note:\n"
-         "#+DOUBAN_ANNOTATION:\n"
-         "#+DOUBAN_STATUS:\n"))
-    (with-temp-buffer
-      (setq buffer-file-name "/tmp/source.org")
-      (insert source)
-      (org-mode)
-      (should douban-mode)
-      (should
-       (memq
-        #'douban-metadata-completion-at-point
-        completion-at-point-functions))
-      (should-not
-       (memq
-        #'douban-user-mention-completion-at-point
-        completion-at-point-functions))))
-  (dolist
-      (source
-       '("#+TITLE: 普通文档\n"
-         "#+BEGIN_SRC text\n#+DOUBAN_STATUS:\n#+END_SRC\n"
-         "* 标题\n普通正文\n"))
-    (with-temp-buffer
-      (setq buffer-file-name "/tmp/ordinary.org")
-      (insert source)
-      (org-mode)
-      (should-not douban-mode)
-      (should-not
-       (memq
-        #'douban-metadata-completion-at-point
-        completion-at-point-functions)))))
+(ert-deftest douban-test-douban-mode-has-no-global-auto-detection ()
+  (should-not (fboundp 'douban--maybe-enable-mode))
+  (should-not
+   (and
+    (boundp 'markdown-mode-hook)
+    (memq #'douban-mode (symbol-value 'markdown-mode-hook))))
+  (should-not
+   (and
+    (boundp 'org-mode-hook)
+    (memq #'douban-mode (symbol-value 'org-mode-hook)))))
 
 (ert-deftest douban-test-douban-publish-does-not-require-douban-mode ()
   (with-temp-buffer
@@ -6514,8 +6512,7 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
       "---\n"
       "douban:\n"
       "  status:\n"
-      "    id: '73'\n"
-      "    topic-id: '703'\n"
+      "    id: '703'\n"
       "    exp\n"
       "---\n"))
     (goto-char (point-min))
@@ -7166,25 +7163,21 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
     (should (equal (plist-get review :review-id) "1"))
     (should (equal (plist-get note :note-id) "2"))))
 
-(ert-deftest douban-test-published-status-requires-topic-id ()
-  (let ((published
-         '(:status
-           (:id "33"
-            :topic-id "303"))))
+(ert-deftest douban-test-published-status-uses-topic-id-as-id ()
+  (let ((published '(:status (:id "303"))))
     (should
      (equal
       (plist-get
        (douban--meta-from-plist published nil)
-       :status-topic-id)
-      "303"))
-    (dolist
-        (incomplete
-         '((:status
-            (:id "33"))
-           (:status (:topic-id "303"))))
-      (should-error
-       (douban--meta-from-plist incomplete nil)
-       :type 'error))))
+       :status-id)
+      "303")))
+  (dolist
+      (obsolete
+       '((:status (:topic-id "303"))
+         (:status (:id "303" :topic-id "303"))))
+    (should-error
+     (douban--meta-from-plist obsolete nil)
+     :type 'error)))
 
 (ert-deftest douban-test-markdown-all-kinds-roundtrip ()
   (dolist
@@ -7213,14 +7206,13 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
             "---\n\n正文\n")
           :note-id "22")
          (status
-          ,(concat
+         ,(concat
             "---\n"
             "douban:\n"
             "  status:\n"
-            "    id: '33'\n"
-            "    topic-id: '303'\n"
+            "    id: '303'\n"
             "---\n\n广播正文\n")
-          :status-id "33")))
+          :status-id "303")))
     (douban-test--with-temp-file
         ".md" (nth 1 case)
       (let ((meta (douban--read-meta file)))
@@ -7280,9 +7272,8 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
          (status
          ,(concat
             "#+DOUBAN_STATUS:\n"
-            "#+DOUBAN_STATUS_ID: 33\n"
-            "#+DOUBAN_STATUS_TOPIC_ID: 303\n\n广播正文\n")
-          :status-id "33")))
+            "#+DOUBAN_STATUS_ID: 303\n\n广播正文\n")
+          :status-id "303")))
     (douban-test--with-temp-file
         ".org" (nth 1 case)
       (let ((meta (douban--read-meta file)))
@@ -7501,11 +7492,14 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
                   (error "new command must stay offline")))
                ((symbol-function 'douban--read-browser-cookies)
                 (lambda (&rest _args)
-                  (error "new command must stay offline"))))
+                  (error "new command must stay offline")))
+               ((symbol-function 'tab-new) #'ignore))
             (douban-new-review
              "book"
              "https://book.douban.com/subject/123/"
              file)
+            (should (equal (buffer-file-name) file))
+            (should douban-mode)
             (let* ((text
                     (with-temp-buffer
                       (insert-file-contents file)
@@ -7549,7 +7543,7 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
               (should-error
                (douban--create-source-file file meta)
                :type 'file-already-exists)))
-        (when-let ((buffer (find-buffer-visiting file)))
+        (when-let* ((buffer (find-buffer-visiting file)))
           (kill-buffer buffer))
         (ignore-errors (delete-directory directory t))))))
 
@@ -8990,17 +8984,6 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
     (should (equal (plist-get payload :image_layout) "horizontal"))
     (should (equal (plist-get payload :anthology_id) "81"))))
 
-(defun douban-test--status-item-html
-    (text uid sid aid &optional atype)
-  "返回正文 TEXT 及 UID、SID、AID、ATYPE 对应的广播 HTML。"
-  (format
-   (concat
-    "<div class=\"status-item\" data-uid=\"%s\" data-sid=\"%s\" "
-    "data-aid=\"%s\" data-atype=\"%s\">"
-    "<blockquote><p>%s</p></blockquote></div>")
-   (or uid "") (or sid "") (or aid "")
-   (or atype "personal/topic") text))
-
 (defun douban-test--review-broadcast-item-html
     (sid review-id &optional action object-kind)
   "返回 SID、REVIEW-ID、ACTION、OBJECT-KIND 对应的长评广播 HTML。"
@@ -9204,180 +9187,26 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
        :type 'error))
     (should (= get-count 3))))
 
-(ert-deftest douban-test-status-home-result-keeps-aid-and-sid-distinct ()
-  (let* ((target "同一条 personal topic")
-         (html
-         (concat
-           "<html><body>"
-           (douban-test--status-item-html
-            "其他正文" "266418270" "9000000001" "490000001")
-           (douban-test--status-item-html
-            target "266418270" "9369506369" "495304730")
-           (douban-test--status-item-html
-           target "266418270" "9369506370" "495304731"
-            "group/topic")
-           "</body></html>"))
-         (raw (douban-test--status-raw target))
-         (result (douban--status-home-result html raw)))
-    (should (equal (plist-get result :id) "9369506369"))
-    (should (equal (plist-get result :topic-id) "495304730"))
-    (should-not
-     (equal (plist-get result :id)
-            (plist-get result :topic-id)))
-    (should
-     (equal
-      (plist-get result :url)
-      (concat
-       "https://www.douban.com/people/266418270/"
-       "status/9369506369/")))))
-
-(ert-deftest douban-test-status-home-result-requires-one-complete-match ()
-  (let* ((target "重复正文")
-         (raw (douban-test--status-raw target)))
-    (should-not
-     (douban--status-home-result
-      (concat
-       (douban-test--status-item-html
-        target "1" "10" "100")
-       (douban-test--status-item-html
-        target "1" "11" "101"))
-      raw))
-    (dolist
-        (html
-         (list
-          (douban-test--status-item-html
-           target "1" "10" "100" "group/topic")
-          (douban-test--status-item-html
-           target "1" nil "100")
-          (douban-test--status-item-html
-           target "1" "10" nil)
-          (douban-test--status-item-html
-           "别的正文" "1" "10" "100")))
-      (should-not (douban--status-home-result html raw)))))
-
-(ert-deftest douban-test-status-home-result-normalizes-whitespace-fail-closed ()
-  (let* ((raw (douban-test--status-raw "第一行" "第二行"))
-         (item
-          (concat
-           "<div class=\"status-item\" data-uid=\"1\" "
-           "data-sid=\"10\" data-aid=\"100\" "
-           "data-atype=\"personal/topic\">"
-           "<blockquote><p>第一行</p><p>第二行</p></blockquote>"
-           "</div>"))
-         (result (douban--status-home-result item raw)))
-    (should (equal (plist-get result :id) "10"))
-    (should (equal (plist-get result :topic-id) "100"))
-    (should-not
-     (douban--status-home-result (concat item item) raw))))
-
-(ert-deftest douban-test-status-home-result-skips-malformed-unrelated-item ()
-  (let* ((target "目标广播")
-         (raw (douban-test--status-raw target))
-         (html
-          (concat
-           (douban-test--status-item-html
-            "无关广播" "not-a-number" "9" "90")
-           (douban-test--status-item-html
-            target "1" "10" "100")))
-         (result (douban--status-home-result html raw)))
-    (should
-     (equal
-      result
-      '(:id "10"
-        :url "https://www.douban.com/people/1/status/10/"
-        :topic-id "100")))))
-
-(ert-deftest douban-test-status-reconcile-uses-separate-home-session ()
-  (let* ((text "发布后对账")
-         (raw (douban-test--status-raw text))
-         (api-session
-          (douban--make-session
-           :kind 'status
-           :cookies '(("api-cookie" . "m-only"))
-           :ck "fresh-ck"
-           :referer douban--topic-post-endpoint
-           :host "m.douban.com"))
-         cookie-url
-         request)
-    (cl-letf
-        (((symbol-function 'douban--read-browser-cookies)
-          (lambda (url)
-            (setq cookie-url url)
-            '(("www-cookie" . "www-only"))))
-         ((symbol-function 'douban--http)
-          (lambda (method url &rest arguments)
-            (setq request (list method url arguments))
-            (list
-             :status 200
-             :headers nil
-             :body
-             (douban-test--status-item-html
-              text "266418270" "9369506369" "495304730")))))
-      (let ((result
-             (douban--status-reconcile api-session raw)))
-        (should (equal (plist-get result :id) "9369506369"))
-        (should (equal (plist-get result :topic-id) "495304730"))))
-    (should (equal cookie-url douban--status-home-url))
-    (pcase-let ((`(,method ,url ,arguments) request))
-      (should (equal method "GET"))
-      (should (equal url douban--status-home-url))
-      (let ((home-session (plist-get arguments :session)))
-        (should-not (eq home-session api-session))
-        (should (equal (douban--session-host home-session)
-                       "www.douban.com"))
-        (should
-         (equal
-          (douban--session-cookies home-session)
-          '(("ck" . "fresh-ck")
-            ("www-cookie" . "www-only"))))))))
-
-(ert-deftest douban-test-status-create-reconciles-sid-after-2xx ()
-  (let ((session (douban--make-session :kind 'status))
-        (raw (douban-test--status-raw "广播正文"))
-        reconcile-arguments)
-    (cl-letf
-        (((symbol-function 'douban--status-reconcile)
-          (lambda (&rest arguments)
-            (setq reconcile-arguments arguments)
-            '(:id "9369506369"
-              :url
-              "https://www.douban.com/people/266418270/status/9369506369/"
-              :topic-id "495304730"))))
-      (should
-       (equal
-        (douban--status-create-result
-         '(:status 200
-           :json (:id "495304730")
-           :body "{\"id\":\"495304730\"}")
-         session raw)
-        '(:id "9369506369"
-          :url
-          "https://www.douban.com/people/266418270/status/9369506369/"
-          :topic-id "495304730"))))
-    (should
-     (equal
-      reconcile-arguments
-      (list session raw "495304730")))))
+(ert-deftest douban-test-status-create-returns-topic-id-after-2xx ()
+  (should
+   (equal
+    (douban--status-create-result
+     '(:status 200
+       :json (:id "495304730")
+       :body "{\"id\":\"495304730\"}"))
+    '(:id "495304730"))))
 
 (ert-deftest douban-test-status-create-classifies-failures ()
-  (let ((session (douban--make-session :kind 'status))
-        (raw (douban-test--status-raw "广播正文")))
-    (cl-letf
-        (((symbol-function 'douban--status-reconcile)
-          (lambda (&rest _arguments)
-            (ert-fail "失败响应不应发起首页对账"))))
-      (dolist (status '(400 401 403 422))
-        (should-error
-         (douban--status-create-result
-          (list :status status :json '(:msg "rejected"))
-          session raw)
-         :type 'user-error))
-      (dolist (status '(302 408 500))
-        (should-error
-         (douban--status-create-result
-          (list :status status :body "unknown")
-         session raw)
-         :type 'douban-create-result-unknown)))))
+  (dolist (status '(400 401 403 422))
+    (should-error
+     (douban--status-create-result
+      (list :status status :json '(:msg "rejected")))
+     :type 'user-error))
+  (dolist (status '(302 408 500))
+    (should-error
+     (douban--status-create-result
+      (list :status status :body "unknown"))
+     :type 'douban-create-result-unknown)))
 
 (ert-deftest douban-test-mutation-http-success-boundary ()
   (dolist (create-p '(t nil))
@@ -9407,20 +9236,12 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
       nil "测试更新" nil)
      :type 'user-error)))
 
-(ert-deftest douban-test-status-accepted-without-sid-is-not-checkpointed ()
-  (let ((session (douban--make-session :kind 'status))
-        (raw (douban-test--status-raw "重复正文")))
-    (cl-letf
-        (((symbol-function 'douban--status-reconcile)
-          (lambda (&rest _arguments)
-            (error "首页没有唯一匹配"))))
-      (should-error
-       (douban--status-create-result
-        '(:status 200
-          :json (:id "495304730")
-          :body "{\"id\":\"495304730\"}")
-        session raw)
-       :type 'douban-published-but-not-checkpointed))))
+(ert-deftest douban-test-status-accepted-without-topic-id-is-not-checkpointed ()
+  (dolist (json '(nil (:id nil) (:id "") (:id "bad")))
+    (should-error
+     (douban--status-create-result
+      (list :status 200 :json json :body "{}"))
+     :type 'douban-published-but-not-checkpointed)))
 
 (ert-deftest douban-test-submit-status-uses-current-personal-topic-api ()
   (let* ((douban-default-reply-limit 'following)
@@ -9434,32 +9255,21 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
            :ck "fresh-ck"
            :referer douban--status-home-url
            :host "m.douban.com"))
-         post-calls
-         reconcile-arguments)
+         post-calls)
     (cl-letf
         (((symbol-function 'douban--http-json)
           (lambda (method url &rest arguments)
             (push (list method url arguments) post-calls)
             '(:status 200
               :json (:id "495304730")
-              :body "{\"id\":\"495304730\"}")))
-         ((symbol-function 'douban--status-reconcile)
-          (lambda (&rest arguments)
-            (setq reconcile-arguments arguments)
-            '(:id "9369506369"
-              :url
-              "https://www.douban.com/people/266418270/status/9369506369/"
-              :topic-id "495304730"))))
+              :body "{\"id\":\"495304730\"}"))))
       (should
        (equal
         (douban--submit-status
          '(:kind status
            :explanation-types "marketing")
          session raw)
-        '(:id "9369506369"
-          :url
-          "https://www.douban.com/people/266418270/status/9369506369/"
-          :topic-id "495304730"))))
+        '(:id "495304730"))))
     (should (= (length post-calls) 1))
     (pcase-let
         ((`(,method ,url ,arguments) (car post-calls)))
@@ -9500,11 +9310,7 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
          (equal (plist-get outer :explanation_types) "K"))
         (should-not (plist-member outer :anthology_id))
         (should-not (plist-member outer :ck))
-        (should-not (plist-member outer :comment))))
-    (should
-     (equal
-      reconcile-arguments
-      (list session raw "495304730")))))
+        (should-not (plist-member outer :comment))))))
 
 (ert-deftest douban-test-submit-status-update-uses-topic-endpoint-once ()
   (let* ((topic-id "495304730")
@@ -9513,10 +9319,9 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
            "https://www.douban.com/topic/%s/edit"
            topic-id))
          (meta
-          (list
+         (list
            :kind 'status
-           :status-id "9369506369"
-           :status-topic-id topic-id
+           :status-id topic-id
            :anthology-id "81"))
          (session
           (douban--make-session
@@ -9540,19 +9345,14 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
         (((symbol-function 'douban--create-request)
           (lambda (&rest _arguments)
             (ert-fail "广播更新不能进入创建请求路径")))
-         ((symbol-function 'douban--status-reconcile)
-          (lambda (&rest _arguments)
-            (ert-fail "广播更新不能按新广播回查首页")))
          ((symbol-function 'douban--http-json)
           (lambda (method url &rest arguments)
             (setq request (list method url arguments))
             '(:status 200 :json nil :body "{}"))))
       (should
-       (equal
+      (equal
         (douban--submit-status meta session raw)
-        (list
-         :id "9369506369"
-         :topic-id topic-id))))
+        (list :id topic-id))))
     (pcase-let ((`(,method ,url ,arguments) request))
       (should (equal method "POST"))
       (should
@@ -9594,8 +9394,7 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
 (ert-deftest douban-test-status-update-failure-is-never-reclassified-as-create ()
   (let ((meta
          '(:kind status
-           :status-id "73"
-           :status-topic-id "7003"))
+           :status-id "7003"))
         (session
          (douban--make-session
           :kind 'status
@@ -9618,9 +9417,7 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
          (eq (car condition) 'douban-create-result-unknown))))))
 
 (ert-deftest douban-test-status-update-requires-truthy-response-data ()
-  (let ((meta
-         '(:status-id "73"
-           :status-topic-id "7003")))
+  (let ((meta '(:status-id "7003")))
     (dolist
         (response
          '((:status 204 :body "")
@@ -9636,8 +9433,7 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
       (douban--status-update-result
        '(:status 200 :body "{}" :json nil)
        meta)
-       '(:id "73"
-        :topic-id "7003")))))
+       '(:id "7003")))))
 
 (ert-deftest douban-test-submit-status-does-not-retry-ambiguous-post ()
   (let ((session
@@ -9654,10 +9450,7 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
         (((symbol-function 'douban--http-json)
           (lambda (&rest _arguments)
             (cl-incf calls)
-            (signal 'plz-curl-error '("connection lost"))))
-         ((symbol-function 'douban--status-reconcile)
-          (lambda (&rest _arguments)
-            (ert-fail "传输中断时不应发起首页对账"))))
+            (signal 'plz-curl-error '("connection lost")))))
       (should-error
        (douban--submit-status '(:kind status) session raw)
        :type 'douban-create-result-unknown))
@@ -10685,10 +10478,9 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
            "https://www.douban.com/topic/%s/edit"
            topic-id))
          (meta
-          (list
+         (list
            :kind 'status
-           :status-id "9369506369"
-           :status-topic-id topic-id))
+           :status-id topic-id))
          (api-session
           (douban--make-session
            :kind 'status
@@ -10769,10 +10561,9 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
            "https://www.douban.com/topic/%s/edit"
            topic-id))
          (meta
-          (list
+         (list
            :kind 'status
-           :status-id "9369506369"
-           :status-topic-id topic-id))
+           :status-id topic-id))
          (api-session
           (douban--make-session
            :kind 'status
@@ -11154,30 +10945,21 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
              (should-not (plist-get actual-meta :anthology-id))
              (let ((saved (douban--read-meta file)))
                (should-not (plist-member saved :status-id))
-               (should-not (plist-get saved :status-id))
-               (should-not
-                (plist-member saved :status-topic-id))
-               (should-not (plist-get saved :status-topic-id)))
-             '(:id "73"
-               :url
-               "https://www.douban.com/people/test/status/73/"
-               :topic-id "7003"))))
-       (should (equal (douban--publish-status-file file meta) "73")))
+               (should-not (plist-get saved :status-id)))
+             '(:id "7003"))))
+       (should (equal (douban--publish-status-file file meta) "7003")))
      (should (= submit-count 1))
      (let ((saved (douban--read-meta file)))
-       (should (equal (plist-get saved :status-id) "73"))
-       (should
-        (equal (plist-get saved :status-topic-id) "7003"))))))
+       (should (equal (plist-get saved :status-id) "7003"))))))
 
-(ert-deftest douban-test-status-update-reuses-all-identifiers ()
+(ert-deftest douban-test-status-update-reuses-topic-id ()
   (douban-test--with-temp-file
    ".md"
    (concat
     "---\n"
     "douban:\n"
     "  status:\n"
-    "    id: '73'\n"
-    "    topic-id: '7003'\n"
+    "    id: '7003'\n"
     "---\n\n更新后的广播正文\n")
    (let* ((meta (douban--read-meta file))
           (raw (douban-test--status-raw "更新后的广播正文"))
@@ -11211,16 +10993,14 @@ BLOCK-KEYS 中每个列表表示一个 block 的 entity range 次序。"
              (should (eq actual-meta meta))
              (should (eq actual-session session))
              (should (eq actual-raw raw))
-             '(:id "73"
-               :topic-id "7003")))
+             '(:id "7003")))
           ((symbol-function 'douban--checkpoint-published-content)
            (lambda (&rest _arguments)
              (ert-fail "广播更新不能写入新的发布标识"))))
-       (should (equal (douban--publish-status-file file meta) "73")))
+       (should (equal (douban--publish-status-file file meta) "7003")))
      (should (= submit-count 1))
      (let ((saved (douban--read-meta file)))
-       (should (equal (plist-get saved :status-id) "73"))
-       (should (equal (plist-get saved :status-topic-id) "7003"))))))
+       (should (equal (plist-get saved :status-id) "7003"))))))
 
 (ert-deftest douban-test-upload-response-rejects-missing-photo ()
   (should-error
