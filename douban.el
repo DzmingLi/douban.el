@@ -5,7 +5,7 @@
 ;; Author: Dzming Li <i@dzming.li>
 ;; Maintainer: Dzming Li <i@dzming.li>
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "31.1") (markdown-mode "2.7") (plz "0.10-pre") (yaml "1.2.4"))
+;; Package-Requires: ((emacs "31.1") (plz "0.10-pre") (org-extra-emphasis "1.0"))
 ;; Keywords: convenience, hypermedia, tools
 ;; URL: https://github.com/DzmingLi/douban.el
 ;; SPDX-License-Identifier: GPL-3.0-or-later
@@ -27,7 +27,7 @@
 
 ;;; Commentary:
 
-;; Use Markdown files as the source of Douban reviews, notes, book
+;; Use Org files as the source of Douban reviews, notes, book
 ;; annotations, and ordinary statuses.
 ;; The package reads an existing browser login from an explicitly selected
 ;; profile, converts rich source documents to the Draft.js raw format where
@@ -52,11 +52,12 @@
 (require 'sqlite)
 (require 'gnutls)
 (require 'xdg)
+(require 'ox-html)
+(require 'org-extra-emphasis)
 
 (declare-function secrets-search-item-paths "secrets"
                   (collection &rest attributes))
 (declare-function secrets-get-secret "secrets" (collection item))
-(declare-function markdown-mode "markdown-mode" ())
 
 (defgroup douban nil
   "在 Emacs 中编辑并发布豆瓣内容。"
@@ -80,11 +81,9 @@
 (defconst douban-minimum-review-length 140
   "长评正文允许的最少非空白字符数。")
 
-(defcustom douban-user-agent
+(defconst douban--user-agent
   "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0"
-  "豆瓣网页请求使用的 User-Agent。"
-  :type 'string
-  :group 'douban)
+  "豆瓣网页请求使用的 User-Agent。")
 
 (defcustom douban-review-directory
   (file-name-as-directory
@@ -164,8 +163,7 @@ CC 许可和 CC0 均不可撤销，启用前应确认自己拥有或控制相关
   blocks
   entities
   next-entity
-  next-block
-  (toc-headings nil :read-only t))
+  next-block)
 
 (cl-defstruct (douban--block
                (:constructor douban--make-block))
@@ -1121,7 +1119,7 @@ METHOD 是大写的方法字符串。BODY 可以是文本；RAW-BODY 为非 nil 
              (list (cons "Cookie" cookie)))
            (when content-type
              (list (cons "Content-Type" content-type)))
-           `(("User-Agent" . ,douban-user-agent)
+           `(("User-Agent" . ,douban--user-agent)
              ("Accept-Language" . "zh-CN,zh;q=0.9,en;q=0.8"))
            extra-headers)))
     (let* ((response
@@ -1516,10 +1514,9 @@ FIELD 必须出现在 `douban--metadata-value-options' 中。OPTIONAL 非 nil �
      :title-p t
      :fields
      ((:source :id
-       :internal :review-id
-       :codec id
-       :description "长评 ID；初次发布省略，发布后自动写回"
-       :nonempty-if-present t)
+      :internal :review-id
+      :codec id
+       :description "长评 ID；初次发布可留空，发布后自动写回")
       (:source :subject-id
        :codec id
        :description "被评论的豆瓣条目 ID"
@@ -1558,10 +1555,9 @@ FIELD 必须出现在 `douban--metadata-value-options' 中。OPTIONAL 非 nil �
      :title-p t
      :fields
      ((:source :id
-       :internal :note-id
-       :codec id
-       :description "日记 ID；初次发布省略，创建页预分配后自动写回"
-       :nonempty-if-present t)
+      :internal :note-id
+      :codec id
+       :description "日记 ID；初次发布留空，创建页预分配后自动写回")
       (:source :privacy
        :internal :note-privacy
        :codec enum
@@ -1576,10 +1572,9 @@ FIELD 必须出现在 `douban--metadata-value-options' 中。OPTIONAL 非 nil �
      :title-p t
      :fields
      ((:source :id
-       :internal :annotation-id
-       :codec id
-       :description "新式读书笔记 topic ID；初次发布省略，发布后自动写回"
-       :nonempty-if-present t)
+      :internal :annotation-id
+      :codec id
+       :description "新式读书笔记 topic ID；初次发布可留空，发布后自动写回")
       (:source :subject-id
        :codec id
        :description "笔记所属的豆瓣图书条目 ID"
@@ -1597,10 +1592,9 @@ FIELD 必须出现在 `douban--metadata-value-options' 中。OPTIONAL 非 nil �
      :title-p nil
      :fields
      ((:source :id
-       :internal :status-id
-       :codec id
-       :description "广播 topic ID；初次发布省略，发布后自动写回"
-       :nonempty-if-present t)
+      :internal :status-id
+      :codec id
+       :description "广播 topic ID；初次发布留空，发布后自动写回")
       (:source :explanation-types
        :codec enum
        :description "单项内容说明")
@@ -1611,7 +1605,7 @@ FIELD 必须出现在 `douban--metadata-value-options' 中。OPTIONAL 非 nil �
   "每种受支持豆瓣源稿类型的 metadata 布局。
 `:fields' 中的 descriptor 是字段名、顺序、codec、说明、补全和适用条件的
 唯一事实源。`:required' 表示源稿必须提供字段；`:allow-empty' 表示枚举可
-显式留空；`:nonempty-if-present' 表示字段可以省略，但出现时必须有值。
+显式留空。ID 字段可用空值标识尚未发布，规范化后视为 nil。
 内部字段名默认等于 `:source'；静态补全默认由 codec 推导。")
 
 (defun douban--kind-spec (kind)
@@ -1856,21 +1850,6 @@ FIELD 必须出现在 `douban--metadata-value-options' 中。OPTIONAL 非 nil �
                    (douban--normalize-metadata-field
                     kind internal-field
                     (plist-get value internal-field))))
-              (when
-                  (and
-                   present-p
-                   (plist-get
-                    descriptor :nonempty-if-present)
-                   (null normalized))
-                (error
-                 (concat
-                  "douban: %s.%s 出现时不能为空；"
-                  "初次发布请省略该字段")
-                 kind
-                 (substring
-                  (symbol-name
-                   (plist-get descriptor :source))
-                  1)))
               (setq
                meta
                (plist-put
@@ -1920,12 +1899,19 @@ FIELD 必须出现在 `douban--metadata-value-options' 中。OPTIONAL 非 nil �
 
 ;;;; Source metadata
 
-(declare-function yaml-parse-string "yaml")
+(declare-function org-collect-keywords "org" (keywords &optional unique directory))
+(declare-function org-element-map "org-element" (data types fun &rest args))
+(declare-function org-element-parse-buffer "org-element" (&rest args))
+(declare-function org-element-context "org-element" (&optional element))
+(declare-function org-element-type "org-element" (element))
+(declare-function org-element-property
+                  "org-element" (property node &optional dflt force-undefer))
+(declare-function org-in-src-block-p "org" (&optional inside))
 
 (defun douban--file-format (file)
   "返回 FILE 的源稿格式符号；无法识别时返回 nil。"
   (pcase (downcase (or (file-name-extension file) ""))
-    ((or "md" "markdown") 'markdown)
+    ("org" 'org)
     (_ nil)))
 
 (defun douban--require-source-format (file)
@@ -1964,38 +1950,7 @@ FIELD 必须出现在 `douban--metadata-value-options' 中。OPTIONAL 非 nil �
         (when temporary
           (ignore-errors (delete-file temporary)))))))
 
-(defun douban--shell-convert (program arguments input)
-  "以 INPUT 作为标准输入，用 ARGUMENTS 运行 PROGRAM，并返回标准输出。"
-  (let ((stderr-file (make-temp-file "douban-stderr-"))
-        (stdout-buffer (generate-new-buffer " *douban-stdout*")))
-    (unwind-protect
-        (with-temp-buffer
-          (insert input)
-          (let ((coding-system-for-write 'utf-8)
-                (coding-system-for-read 'utf-8)
-                (status
-                 (apply
-                  #'call-process-region
-                  (point-min) (point-max)
-                  program nil
-                  (list stdout-buffer stderr-file)
-                  nil arguments)))
-            (if (eq status 0)
-                (with-current-buffer stdout-buffer
-                  (buffer-string))
-              (let ((detail
-                     (with-temp-buffer
-                       (insert-file-contents stderr-file)
-                       (string-trim (buffer-string)))))
-                (error
-                 "douban: %s 退出 %s%s"
-                 program status
-                 (if (string-empty-p detail)
-                     ""
-                   (concat "：" detail)))))))
-      (when (buffer-live-p stdout-buffer)
-        (kill-buffer stdout-buffer))
-      (ignore-errors (delete-file stderr-file)))))
+
 
 (defun douban--metadata-entries (meta)
   "从 META 返回按固定顺序排列的源文件子映射条目。
@@ -2011,223 +1966,235 @@ FIELD 必须出现在 `douban--metadata-value-options' 中。OPTIONAL 非 nil �
      when value
      collect (list descriptor value))))
 
-;; Markdown front matter
 
-(defconst douban--md-douban-key-regexp
-  "^douban[ \t]*:[^\n]*"
-  "规范的顶层 YAML `douban' 键。")
 
-(defun douban--md-parse-frontmatter (frontmatter)
-  "解析 Markdown FRONTMATTER，并为解析错误添加来源上下文。"
-  (unless (require 'yaml nil t)
-    (error "douban: 读取 Markdown metadata 需要 yaml.el"))
-  (condition-case err
-      (yaml-parse-string
-       frontmatter
-       :object-type 'plist
-       :sequence-type 'array
-       :string-values t)
-    (error
-     (error
-      "douban: Markdown front matter 解析失败：%s"
-      (error-message-string err)))))
 
-(defun douban--md-split-frontmatter (text)
-  "将 TEXT 拆分为 (FRONTMATTER . BODY)。"
-  (with-temp-buffer
-    (insert text)
-    (goto-char (point-min))
-    (if (not (looking-at "---[ \t]*\n"))
-        (cons nil text)
-      (goto-char (match-end 0))
-      (let ((frontmatter-begin (point))
-            frontmatter-end
-            body-begin)
-        (while (and (not body-begin) (not (eobp)))
-          (if (looking-at "---[ \t]*$")
-              (progn
-                (setq frontmatter-end (point))
-                (forward-line 1)
-                (setq body-begin (point)))
-            (forward-line 1)))
-        (if (not body-begin)
-            (cons nil text)
-          (when (and
-                 (> frontmatter-end frontmatter-begin)
-                 (eq (char-before frontmatter-end) ?\n))
-            (setq frontmatter-end (1- frontmatter-end)))
-          (cons
-           (buffer-substring-no-properties
-            frontmatter-begin frontmatter-end)
-           (buffer-substring-no-properties
-            body-begin (point-max))))))))
 
-(defun douban--md-frontmatter-meta (frontmatter)
-  "从 Markdown FRONTMATTER 解析豆瓣元数据。"
-  (when frontmatter
-    (let* ((parsed (douban--md-parse-frontmatter frontmatter))
-           (writable-douban-region
-            (douban--md-douban-region frontmatter))
-           (value (and (listp parsed) (plist-get parsed :douban)))
-           (title (and (listp parsed) (plist-get parsed :title))))
-      (when (and (listp parsed) (plist-member parsed :douban))
-        ;; YAML 接受加引号的 key，但写回时只替换字面形式的顶层
-        ;; `douban:' 块，因此拒绝只能解析、不能安全写回的形式。
-        (unless writable-douban-region
+
+
+
+
+
+
+
+
+
+
+;; Org metadata
+
+(defun douban--org-keyword-component (symbol)
+  "把 SYMBOL 转换为 Org 关键字中的大写下划线组成部分。"
+  (upcase
+   (replace-regexp-in-string
+    "-" "_" (substring (symbol-name symbol) 1) t t)))
+
+(defun douban--org-kind-keyword-name (kind)
+  "返回 KIND 的 Org 关键字前缀。"
+  (format "DOUBAN_%s" (upcase (symbol-name kind))))
+
+(defun douban--org-field-keyword-name (kind source-field)
+  "返回 KIND 中 SOURCE-FIELD 的完整 Org 关键字名称。"
+  (format
+   "%s_%s"
+   (douban--org-kind-keyword-name kind)
+   (douban--org-keyword-component source-field)))
+
+(defconst douban--org-field-keyword-descriptors
+  (cl-loop
+   for (kind . spec) in douban--kind-specs
+   for fields = (plist-get spec :fields)
+   append
+   (cl-loop
+    for descriptor in fields
+    for source-field = (plist-get descriptor :source)
+    for internal-field =
+    (douban--metadata-descriptor-internal-field
+     descriptor)
+    collect
+    (list
+     (douban--org-field-keyword-name kind source-field)
+     kind source-field internal-field)))
+  "Org 完整关键字到类型、源稿字段和内部字段的映射。")
+
+(defconst douban--org-owned-keyword-names
+  (mapcar #'car douban--org-field-keyword-descriptors)
+  "由 douban.el 读取和重写的 Org 关键字。")
+
+(defconst douban--org-keyword-names
+  (cons "TITLE" douban--org-owned-keyword-names)
+  "douban.el 读取的全部文档关键字。")
+
+(defun douban--org-keyword-descriptor (name)
+  "返回 Org 关键字 NAME 的字段描述条目。"
+  (assoc-string name douban--org-field-keyword-descriptors t))
+
+(defun douban--org-collect-keywords ()
+  "收集当前缓冲区中文档层级的豆瓣关键字。
+忽略块和 drawer 内的匹配文本。每个豆瓣关键字最多只能出现一次。"
+  (require 'org)
+  (unless (derived-mode-p 'org-mode)
+    (delay-mode-hooks (org-mode)))
+  (let (entries unknown)
+    (org-element-map
+     (org-element-parse-buffer)
+     'keyword
+     (lambda (node)
+       (unless (douban--org-metadata-blocked-node-p node)
+         (let ((key (org-element-property :key node))
+               (value
+                (string-trim
+                 (or (org-element-property :value node) ""))))
+           (cond
+            ((member key douban--org-keyword-names)
+             (push (cons key value) entries))
+            ((string-prefix-p "DOUBAN_" key)
+             (push key unknown)))))))
+    (when unknown
+      (error "douban: Org 不接受关键字 %s" (car unknown)))
+    (dolist (key douban--org-owned-keyword-names)
+      (when
+          (> (cl-count key entries :key #'car :test #'equal) 1)
+        (error "douban: Org 关键字 %s 不能重复" key)))
+    (nreverse entries)))
+
+(defun douban--org-buffer-meta ()
+  "从当前 Org buffer 读取规范化的豆瓣元数据。"
+  (let* ((keywords (douban--org-collect-keywords))
+         (title (cdr (assoc-string "TITLE" keywords t)))
+         (owned
+          (cl-remove-if-not
+           (lambda (entry)
+             (member
+              (car entry)
+              douban--org-owned-keyword-names))
+           keywords)))
+    (when owned
+      (let ((kinds
+             (delete-dups
+              (cl-loop
+               for (name . _value) in owned
+               for descriptor =
+               (douban--org-keyword-descriptor name)
+               when descriptor collect (nth 1 descriptor)))))
+        (unless (= (length kinds) 1)
           (error
-           "douban: Markdown metadata 的 key 必须直接写成未加引号的顶层 douban:"))
-        (unless (listp value)
-          (error
-           "douban: Markdown front matter 的 douban 必须是 mapping"))
-        (douban--meta-from-plist value title)))))
+           (concat
+            "douban: Org metadata 必须且只能属于 review、note、"
+            "annotation 或 status 中的一种类型")))
+        (let ((kind (car kinds)) source)
+          (dolist (entry owned)
+            (let* ((descriptor
+                    (douban--org-keyword-descriptor
+                     (car entry)))
+                   (field-kind (nth 1 descriptor))
+                   (source-field (nth 2 descriptor)))
+              (unless (eq field-kind kind)
+                (error
+                 "douban: %s 不属于 %s metadata"
+                 (car entry) kind))
+              (setq
+               source
+               (plist-put
+                source source-field (cdr entry)))))
+          (douban--meta-from-plist
+           (list
+            (douban--metadata-source-kind-key kind)
+            source)
+           title))))))
 
-(defun douban--md-meta (file)
-  "从 Markdown FILE 读取规范化的豆瓣元数据。"
-  (let* ((text
-          (with-temp-buffer
-            (insert-file-contents file)
-            (buffer-string)))
-         (frontmatter (car (douban--md-split-frontmatter text))))
-    (douban--md-frontmatter-meta frontmatter)))
-
-(defun douban--md-douban-region (frontmatter)
-  "返回 FRONTMATTER 顶层 `douban' 映射的零基索引区间。"
+(defun douban--org-meta (file)
+  "从 Org FILE 读取规范化的豆瓣元数据。"
   (with-temp-buffer
-    (insert frontmatter)
-    (goto-char (point-min))
-    (when
-        (re-search-forward
-         douban--md-douban-key-regexp nil t)
-      (let ((begin (match-beginning 0))
-            end)
-        (goto-char begin)
-        (forward-line 1)
-        (setq end (point))
-        (while (< (point) (point-max))
-          (cond
-           ((looking-at "[ \t]*#")
-            (forward-line 1))
-           ((looking-at "[ \t]+")
-            (forward-line 1)
-            (setq end (point)))
-           ((looking-at "[ \t]*\n")
-            (forward-line 1))
-           (t (goto-char (point-max)))))
-        (cons (1- begin) (1- end))))))
+    (insert-file-contents file)
+    (douban--org-buffer-meta)))
 
-(defun douban--yaml-string (value)
-  "将字符串 VALUE 序列化为 YAML 单引号标量。
-单引号会保留反斜杠的字面值；yaml.el 的双引号解析器无法让所有 JSON
-风格的转义完整往返。"
-  (concat
-   "'"
-   (replace-regexp-in-string "'" "''" value t t)
-   "'"))
-
-(defun douban--metadata-yaml-field-lines (descriptor value)
-  "按照 DESCRIPTOR 的 codec 把 VALUE 格式化为 YAML 字段行。"
-  (let ((name
-         (substring
-          (symbol-name
-           (plist-get descriptor :source))
-          1)))
-    (pcase (plist-get descriptor :codec)
-      ('rating
-       (list (format "    %s: %d" name value)))
-      ('boolean
-       (list
-        (format
-         "    %s: %s"
-         name
-         (if (eq value :json-false) "false" "true"))))
-      ('list
-       (cons
-        (format "    %s:" name)
-        (mapcar
-         (lambda (item)
-           (format
-            "      - %s"
-            (douban--yaml-string item)))
-         value)))
-      ('enum
-       (list
-        (format "    %s: %s" name value)))
-      ((or 'id 'text)
-       (list
-        (format
-         "    %s: %s"
-         name
-         (douban--yaml-string value))))
-      (_
-       (error
-        "douban: metadata 字段 %S 没有可序列化的 codec"
-        (douban--metadata-descriptor-internal-field
-         descriptor))))))
-
-(defun douban--format-yaml-meta (meta)
-  "将 META 格式化为 Markdown 的嵌套 `douban' 映射。"
+(defun douban--format-org-meta (meta)
+  "将 META 格式化为带类型路径的 Org `#+DOUBAN_*' 关键字行。"
   (let* ((kind (plist-get meta :kind))
          (entries (douban--metadata-entries meta))
          lines)
-    (push "douban:" lines)
-    (push
-     (if entries
-         (format "  %s:" kind)
-       (format "  %s: {}" kind))
-     lines)
+    (unless entries
+      (error
+       "douban: %s Org metadata 至少需要一个带类型前缀的字段"
+       kind))
     (dolist (entry entries)
-      (pcase-let ((`(,descriptor ,value) entry))
-        (dolist
-            (line
-             (douban--metadata-yaml-field-lines
-              descriptor value))
-          (push line lines))))
+      (pcase-let* ((`(,descriptor ,value) entry)
+                   (source-field
+                    (plist-get descriptor :source))
+                   (codec
+                    (plist-get descriptor :codec)))
+        (push
+         (format
+          "#+%s: %s"
+          (douban--org-field-keyword-name
+           kind source-field)
+          (pcase codec
+            ('boolean
+             (if (eq value :json-false) "false" "true"))
+            ('list
+             (mapconcat #'identity value ","))
+            ('rating
+             (number-to-string value))
+            ((or 'id 'text 'enum)
+             value)
+            (_
+             (error
+              "douban: metadata 字段 %S 没有可序列化的 codec"
+              (douban--metadata-descriptor-internal-field
+               descriptor)))))
+         lines)))
     (concat
      (mapconcat #'identity (nreverse lines) "\n")
      "\n")))
 
-(defun douban--md-write-meta (file meta)
-  "把 META 写入 Markdown FILE 的顶层 `douban' 映射。"
-  (with-temp-buffer
-    (insert-file-contents file)
-    (let* ((text (buffer-string))
-           (split (douban--md-split-frontmatter text))
-           (frontmatter (car split))
-           (body (cdr split))
-           (new-douban (douban--format-yaml-meta meta))
-           (region
-            (and
-             frontmatter
-             (douban--md-douban-region frontmatter))))
-      (cond
-       ((null frontmatter)
-        (erase-buffer)
-        (insert "---\n" new-douban "---\n" body))
-       (region
-        (let ((new-frontmatter
-               (concat
-                (substring frontmatter 0 (car region))
-                new-douban
-                (substring frontmatter (cdr region)))))
-          (erase-buffer)
-          (insert "---\n" new-frontmatter "\n---\n" body)))
-       (t
-        (erase-buffer)
-        (insert
-         "---\n" frontmatter "\n" new-douban "---\n" body))))
-    (douban--write-current-buffer-atomically file)))
+(defun douban--org-write-meta (file meta)
+  "将 META 写入 Org FILE，同时保留无关关键字。"
+  (let ((block (douban--format-org-meta meta)))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (require 'org)
+      (delay-mode-hooks (org-mode))
+      (let (regions)
+        (org-element-map
+         (org-element-parse-buffer)
+         'keyword
+         (lambda (node)
+           (when
+               (member
+                (org-element-property :key node)
+                douban--org-owned-keyword-names)
+             (let ((begin (org-element-property :begin node)))
+               (push
+                (cons
+                 begin
+                 (save-excursion
+                   (goto-char begin)
+                   (line-beginning-position 2)))
+                regions)))))
+        (dolist
+            (region
+             (sort regions
+                   (lambda (left right)
+                     (> (car left) (car right)))))
+          (delete-region (car region) (cdr region))))
+      (goto-char (point-min))
+      (let ((case-fold-search t))
+        (while (looking-at "^#\\+[[:alnum:]_]+:.*\n")
+          (goto-char (match-end 0))))
+      (insert block)
+      (douban--write-current-buffer-atomically file))))
 
 ;; Metadata dispatch
 
 (defun douban--read-meta (file)
   "从 FILE 读取规范化的豆瓣元数据。"
-  (when (eq (douban--file-format file) 'markdown)
-    (douban--md-meta file)))
+  (pcase (douban--file-format file)
+    ('org (douban--org-meta file))))
 
 (defun douban--write-meta (file meta)
   "将规范化的 META 写回 FILE。"
-  (douban--require-source-format file)
-  (douban--md-write-meta file meta))
+  (pcase (douban--require-source-format file)
+    ('org (douban--org-write-meta file meta))))
 
 (defun douban--current-source ()
   "保存当前源稿，并返回 `(FILE META)'。"
@@ -2255,144 +2222,216 @@ FIELD 必须出现在 `douban--metadata-value-options' 中。OPTIONAL 非 nil �
 
 (defconst douban--highlight-block-marker-attribute
   "data-douban-highlight-block"
-  "Pandoc HTML 中标记原生块高亮的私有属性。")
+  "HTML 中标记原生块高亮的私有属性。")
 
-(defconst douban--pandoc-highlight-block-filter
-  (concat
-   "local marker = '" douban--highlight-block-marker-attribute "'\n\n"
-   "local function full_mark(block)\n"
-   "  if block.t ~= 'Para' or #block.content ~= 1 then\n"
-   "    return nil\n"
-   "  end\n"
-   "  local inline = block.content[1]\n"
-   "  if inline.t ~= 'Span'\n"
-   "      or inline.identifier ~= ''\n"
-   "      or #inline.classes ~= 1\n"
-   "      or inline.classes[1] ~= 'mark' then\n"
-   "    return nil\n"
-   "  end\n"
-   "  for _, _ in pairs(inline.attributes) do\n"
-   "    return nil\n"
-   "  end\n"
-   "  return inline.content\n"
-   "end\n\n"
-   "function Pandoc(doc)\n"
-   "  local output = pandoc.List()\n"
-   "  for _, block in ipairs(doc.blocks) do\n"
-   "    local content = full_mark(block)\n"
-   "    if content == nil then\n"
-   "      output:insert(block)\n"
-   "    else\n"
-   "      output:insert(pandoc.Div(\n"
-   "        {pandoc.Para(content)},\n"
-   "        pandoc.Attr('', {}, {[marker] = 'true'})\n"
-   "      ))\n"
-   "    end\n"
-   "  end\n"
-   "  doc.blocks = output\n"
-   "  return doc\n"
-   "end\n")
-  "把 Markdown 的完整顶层 mark 段落标记为原生块高亮。")
+(defconst douban--org-highlight-marker-attribute
+  "data-douban-org-highlight"
+  "ox-html 输出中暂时标记 Org `!!...!!' 高亮的私有属性。")
 
-(defconst douban--toc-marker-attribute
-  "data-douban-generated-toc-depth"
-  "Pandoc HTML 中标记自动目录位置和深度的私有属性。")
 
-(defun douban--metadata-toc-depth (value)
-  "把 Markdown 顶层 `toc-depth' VALUE 规范化为 1 至 6。"
-  (let ((text (and (stringp value) (string-trim value))))
-    (unless (and text (string-match-p "\\`[1-6]\\'" text))
-      (error "douban: Markdown toc-depth 必须是 1 到 6 的整数"))
-    (string-to-number text)))
 
-(defun douban--md-toc-depth (frontmatter)
-  "返回 Markdown FRONTMATTER 请求的目录深度，否则返回 nil。
-`toc: true' 默认使用 Pandoc 的三级目录深度；可用顶层 `toc-depth'
-把深度设置为 1 至 6。"
-  (when frontmatter
-    (let* ((parsed (douban--md-parse-frontmatter frontmatter))
-           (toc-present (and (listp parsed) (plist-member parsed :toc)))
-           (toc-value (and toc-present (plist-get parsed :toc)))
-           (toc
-            (and
-             toc-present
-             (let ((text
-                    (and
-                     (stringp toc-value)
-                     (downcase (string-trim toc-value)))))
-               (cond
-                ((equal text "true") t)
-                ((equal text "false") nil)
-                (t
-                 (error
-                  "douban: Markdown 顶层 toc 必须是 true 或 false"))))))
-           (depth-present
-            (and (listp parsed) (plist-member parsed :toc-depth)))
-           (depth
-            (and
-             depth-present
-             (douban--metadata-toc-depth
-              (plist-get parsed :toc-depth)))))
-      (and toc (or depth 3)))))
 
-(defun douban--pandoc-to-html (from input)
-  "将 INPUT 从 Pandoc 的 FROM 格式转换为 HTML 片段。"
-  (let (filters)
-    (unwind-protect
-        (progn
-          (when (string-prefix-p "markdown" from)
-            (push
-             (make-temp-file
-              "douban-highlight-block-" nil ".lua"
-              douban--pandoc-highlight-block-filter)
-             filters))
-          (setq filters (nreverse filters))
-          (douban--shell-convert
-           "pandoc"
-           (append
-            (list "-f" from "-t" "html5")
-            (cl-mapcan
-             (lambda (filter)
-               (list "--lua-filter" filter))
-             filters)
-            (list "--wrap=none" "--no-highlight"))
-           input))
-      (dolist (filter filters)
-        (ignore-errors (delete-file filter))))))
+
+(defun douban--org-protected-highlight-ranges (paragraph)
+  "返回 PARAGRAPH 中不解释 `!!' 的 Org 对象位置区间。"
+  (let (ranges)
+    (org-element-map
+        paragraph
+        '(code verbatim link inline-src-block inline-babel-call export-snippet)
+      (lambda (node)
+        (push
+         (cons (org-element-property :begin node)
+               (org-element-property :end node))
+         ranges)))
+    ranges))
+
+(defun douban--org-expand-highlight-markup ()
+  "在当前 Org buffer 中把成对 `!!...!!' 改成 ox-html export snippets。
+代码、verbatim、链接和 export snippet 内的分隔符保持原样；空对与未闭合对
+也保持原样。"
+  (let (replacements)
+    (org-element-map (org-element-parse-buffer) 'paragraph
+      (lambda (paragraph)
+        (let ((ranges (douban--org-protected-highlight-ranges paragraph))
+              open)
+          (save-excursion
+            (goto-char (org-element-property :begin paragraph))
+            (while
+                (re-search-forward
+                 "!!" (org-element-property :end paragraph) t)
+              (let ((position (match-beginning 0)))
+                (unless
+                    (cl-some
+                     (lambda (range)
+                       (and (<= (car range) position)
+                            (< position (cdr range))))
+                     ranges)
+                  (if (null open)
+                      (setq open position)
+                    (unless (= position (+ open 2))
+                      (push
+                       (cons
+                        open
+                        (format
+                         "@@html:<mark %s=\"true\">@@"
+                         douban--org-highlight-marker-attribute))
+                       replacements)
+                      (push
+                       (cons position "@@html:</mark>@@")
+                       replacements))
+                    (setq open nil)))))))))
+    (dolist
+        (replacement
+         (sort replacements (lambda (left right) (> (car left) (car right)))))
+      (goto-char (car replacement))
+      (delete-char 2)
+      (insert (cdr replacement)))))
+
+(defun douban--org-structural-container-p (node)
+  "若 NODE 只是 ox-html 添加的结构包装，则返回非 nil。"
+  (and
+   (consp node)
+   (eq (dom-tag node) 'div)
+   (let ((classes
+          (split-string (or (dom-attr node 'class) "") "[ \t\r\n]+" t)))
+     (cl-some
+      (lambda (class)
+        (or
+         (equal class "org-src-container")
+         (string-prefix-p "outline-" class)
+         (string-prefix-p "outline-text-" class)))
+      classes))))
+
+(defun douban--org-normalize-node (node)
+  "规范化 ox-html NODE，并返回零个或多个 HTML 节点。"
+  (cond
+   ((stringp node) (list node))
+   ((not (consp node)) nil)
+   ((douban--org-structural-container-p node)
+    (cl-mapcan #'douban--org-normalize-node (dom-children node)))
+   (t
+    (let* ((attrs (copy-tree (dom-attributes node)))
+           (children
+            (cl-mapcan #'douban--org-normalize-node
+                       (dom-children node))))
+      (when (eq (dom-tag node) 'p)
+        (while (and (stringp (car children))
+                    (string-match-p "\\`[ \t\r\n]*\\'" (car children)))
+          (setq children (cdr children)))
+        (when (stringp (car children))
+          (setcar children
+                  (replace-regexp-in-string
+                   "\\`[ \t]*[\r\n]+[ \t]*" "" (car children))))
+        (when-let* ((tail (last children))
+                    (text (and (stringp (car tail)) (car tail))))
+          (setcar tail
+                  (replace-regexp-in-string
+                   "[ \t]*[\r\n]+[ \t]*\\'" "" text)))
+        (while (and children
+                    (stringp (car (last children)))
+                    (string-match-p
+                     "\\`[ \t\r\n]*\\'" (car (last children))))
+          (setq children (butlast children))))
+      (list
+       (cons
+        (dom-tag node)
+        (cons attrs children)))))))
+
+(defun douban--org-highlight-block (node)
+  "把完全由包内 Org 高亮组成的顶层段落 NODE 升级为块高亮。"
+  (let ((children (and (consp node) (douban--dom-significant-children node))))
+    (if
+        (and
+         (consp node)
+         (eq (dom-tag node) 'p)
+         (= (length children) 1)
+         (consp (car children))
+         (eq (dom-tag (car children)) 'mark)
+         (equal
+          (dom-attr
+           (car children) (intern douban--org-highlight-marker-attribute))
+          "true")
+         (not (string-empty-p (string-trim (dom-inner-text (car children))))))
+        `(div
+          ((,(intern douban--highlight-block-marker-attribute) . "true"))
+          (p ,(copy-tree (dom-attributes node))
+             ,@(copy-tree (dom-children (car children)))))
+      node)))
+
+(defun douban--org-strip-highlight-marker (node)
+  "从 NODE 及其后代移除包内 ox-html 高亮私有属性。"
+  (cond
+   ((stringp node) node)
+   ((not (consp node)) node)
+   (t
+    (cons
+     (dom-tag node)
+     (cons
+      (assq-delete-all
+       (intern douban--org-highlight-marker-attribute)
+       (copy-tree (dom-attributes node)))
+      (mapcar #'douban--org-strip-highlight-marker
+              (dom-children node)))))))
+
+(defun douban--org-normalize-html (html)
+  "去掉 ox-html 结构包装，并把包内 Org 高亮标记正规化。"
+  (let* ((dom
+          (douban--parse-html (concat "<html><body>" html "</body></html>")))
+         (body (car (dom-by-tag dom 'body)))
+         (children
+          (cl-mapcan #'douban--org-normalize-node (dom-children body)))
+         (new-body
+          `(body nil
+                 ,@(mapcar
+                    (lambda (node)
+                      (douban--org-strip-highlight-marker
+                       (douban--org-highlight-block node)))
+                    children))))
+    (with-temp-buffer
+      (dolist (child (dom-children new-body))
+        (if (stringp child)
+            (insert (xml-escape-string child))
+          (dom-print child nil nil)))
+      (buffer-string))))
+
+(defun douban--org-to-html (text)
+  "用 ox-html 将 Org TEXT 导出为供豆瓣转换使用的 HTML fragment。"
+  (let ((org-export-use-babel nil)
+        (org-confirm-babel-evaluate t)
+        (org-export-with-section-numbers nil)
+        (org-export-with-toc nil)
+        (org-html-htmlize-output-type nil)
+        (org-html-head-include-default-style nil)
+        (org-html-head-include-scripts nil))
+    (with-temp-buffer
+      (insert text)
+      (delay-mode-hooks (org-mode))
+      (douban--org-expand-highlight-markup)
+      (douban--org-normalize-html
+       (org-export-as
+        'html nil nil t '(:section-numbers nil :with-toc nil))))))
 
 (defun douban--source-html (file)
   "将源稿 FILE 转换为 HTML 片段。"
-  (douban--require-source-format file)
-  (let* ((text
-          (with-temp-buffer
-            (insert-file-contents file)
-            (buffer-string)))
-         (split (douban--md-split-frontmatter text))
-         (frontmatter (car split))
-         (body (cdr split))
-         (toc-depth (douban--md-toc-depth frontmatter))
-         (html (douban--pandoc-to-html "markdown+mark" body)))
-    (if toc-depth
-        (format
-         "<div %s=\"%d\"></div>\n%s"
-         douban--toc-marker-attribute toc-depth html)
-      html)))
+  (pcase (douban--require-source-format file)
+    ('org
+     (let ((text
+            (with-temp-buffer
+              (insert-file-contents file)
+              (buffer-string))))
+       (douban--org-to-html text)))))
 
 (defun douban--current-buffer-meta ()
   "从当前未保存的源稿 buffer 读取规范化 metadata。"
   (unless buffer-file-name
     (user-error "douban: 当前 buffer 没有源稿文件"))
-  (douban--require-source-format buffer-file-name)
-  (save-excursion
-    (save-restriction
-      (widen)
-      (let* ((text
-              (buffer-substring-no-properties
-               (point-min) (point-max)))
-             (frontmatter
-              (car (douban--md-split-frontmatter text))))
+  (let ((format (douban--require-source-format buffer-file-name)))
+    (save-excursion
+      (save-restriction
+        (widen)
         (or
-         (douban--md-frontmatter-meta frontmatter)
+         (pcase format
+           ('org (douban--org-buffer-meta)))
          (user-error
           "douban: %s 缺少 douban metadata"
           (file-name-nondirectory buffer-file-name)))))))
@@ -2416,10 +2455,7 @@ FIELD 必须出现在 `douban--metadata-value-options' 中。OPTIONAL 非 nil �
      "\\`https://www\\.douban\\.com/people/"
      "\\([A-Za-z0-9._~-]+\\)/\\'")
     value)
-   (not
-    (member
-     (match-string 1 value)
-     '("." "..")))))
+   (not (member (match-string 1 value) '("." "..")))))
 
 (defun douban--search-users (query)
   "补全 QUERY 对应的已关注豆瓣用户，并返回规范用户 plist 列表。"
@@ -2430,16 +2466,14 @@ FIELD 必须出现在 `douban--metadata-value-options' 中。OPTIONAL 非 nil �
           (douban--cookie-session
            'status douban--user-search-endpoint))
          (_referer
-          (setf
-           (douban--session-referer session)
-           "https://www.douban.com/"))
+          (setf (douban--session-referer session)
+                "https://www.douban.com/"))
          (url
           (format
            "%s?q=%s&start=0&count=10&ck=%s"
            douban--user-search-endpoint
            (url-hexify-string query)
-           (url-hexify-string
-            (douban--session-ck session))))
+           (url-hexify-string (douban--session-ck session))))
          (response
           (douban--http-json
            "GET" url
@@ -2452,10 +2486,9 @@ FIELD 必须出现在 `douban--metadata-value-options' 中。OPTIONAL 非 nil �
          (detail
           (and
            (listp json)
-           (or
-            (plist-get json :localized_message)
-            (plist-get json :msg)
-            (plist-get json :message)))))
+           (or (plist-get json :localized_message)
+               (plist-get json :msg)
+               (plist-get json :message)))))
     (unless (<= 200 status 299)
       (if (or (memq status '(401 403))
               (equal (plist-get json :code) 121))
@@ -2472,38 +2505,30 @@ FIELD 必须出现在 `douban--metadata-value-options' 中。OPTIONAL 非 nil �
      for user in (plist-get json :users)
      for normalized =
      (condition-case nil
-         (when
-             (and
-              (listp user)
-              (eq (plist-get user :followed) t))
+         (when (and (listp user)
+                    (eq (plist-get user :followed) t))
            (let ((id
-                  (douban--value-string
-                   (plist-get user :id)))
+                  (douban--value-string (plist-get user :id)))
                  (name
                   (douban--metadata-text
                    "豆瓣用户名" (plist-get user :name)))
                  (profile-url (plist-get user :url)))
-             (when
-                 (and
-                  id
-                  (string-match-p "\\`[1-9][0-9]*\\'" id)
-                  name
-                  (douban--user-profile-url-p profile-url))
-               (list
-                :id id :name name :url profile-url))))
+             (when (and id
+                        (string-match-p "\\`[1-9][0-9]*\\'" id)
+                        name
+                        (douban--user-profile-url-p profile-url))
+               (list :id id :name name :url profile-url))))
        (error nil))
      when normalized collect normalized)))
 
 (defun douban--html-numeric-entities (text)
   "把 TEXT 的每个字符编码为 HTML 数字字符引用。"
   (mapconcat
-   (lambda (character)
-     (format "&#x%X;" character))
-   text
-   ""))
+   (lambda (character) (format "&#x%X;" character))
+   text ""))
 
 (defun douban--user-mention-source (user)
-  "把 USER 格式化为 Markdown 持久化 mention 源标记。"
+  "把 USER 格式化为 Org 中的持久化 mention 源标记。"
   (let* ((id (plist-get user :id))
          (name (plist-get user :name))
          (profile-url (plist-get user :url))
@@ -2515,30 +2540,26 @@ FIELD 必须出现在 `douban--metadata-value-options' 中。OPTIONAL 非 nil �
            (xml-escape-string profile-url)
            (xml-escape-string marker)
            (douban--html-numeric-entities text))))
-    anchor))
+    (format "@@html:%s@@" anchor)))
 
 (defun douban--user-completion-candidates (users)
   "把规范化 USERS 转为补全使用的 `(LABEL . USER)' 列表。"
   (mapcar
    (lambda (user)
      (cons
-      (format
-       "%s (%s)"
-       (plist-get user :name)
-       (plist-get user :id))
+      (format "%s (%s)"
+              (plist-get user :name)
+              (plist-get user :id))
       user))
    users))
 
 ;;;###autoload
 (defun douban-insert-user-mention (query)
-  "补全 QUERY 对应的已关注豆瓣用户，并在光标处插入原生 mention。
-长评、日记和普通广播都使用 Draft.js 原生 USER entity。"
+  "搜索 QUERY 对应的已关注豆瓣用户，并插入原生 mention。"
   (interactive (list (read-string "补全已关注豆瓣用户: ")))
-  (unless
-      (and
-       buffer-file-name
-       (eq (douban--file-format buffer-file-name) 'markdown))
-      (user-error "douban: 当前 buffer 不是受支持的 Markdown 源稿"))
+  (unless (and buffer-file-name
+               (eq (douban--file-format buffer-file-name) 'org))
+    (user-error "douban: 当前 buffer 不是 Org 源稿文件"))
   (douban--current-buffer-meta)
   (let* ((users (douban--search-users query))
          (candidates (douban--user-completion-candidates users)))
@@ -2549,260 +2570,6 @@ FIELD 必须出现在 `douban--metadata-value-options' 中。OPTIONAL 非 nil �
              "已关注豆瓣用户: " candidates nil t))
            (user (cdr (assoc selected candidates))))
       (insert (douban--user-mention-source user)))))
-
-(defvar-local douban--user-mention-completion-cache nil
-  "当前 buffer 中按查询前缀缓存的已关注用户补全结果。")
-
-(defun douban--markdown-body-start ()
-  "返回当前 Markdown buffer 的正文起点。
-若开头存在未闭合 YAML front matter，则返回 `point-max'。"
-  (save-excursion
-    (goto-char (point-min))
-    (if (not (looking-at "---[ \t]*\n"))
-        (point-min)
-      (goto-char (match-end 0))
-      (if (re-search-forward "^---[ \t]*\r?$" nil t)
-          (progn
-            (forward-line 1)
-            (point))
-        (point-max)))))
-
-(defun douban--markdown-mention-boundary-p (position)
-  "POSITION 处的 `@' 可以开始正文 mention 时返回非 nil。"
-  (or
-   (= position (line-beginning-position))
-   (let ((previous (char-before position)))
-     (or
-      (memq previous
-            '(?\s ?\t ?\r ?\n ?\( ?\[ ?\{ ?\" ?\'))
-      (and
-       previous
-       (> previous 127)
-       (eq (char-syntax previous) ?.))))))
-
-(defun douban--markdown-fenced-code-p (position body-start)
-  "POSITION 位于 BODY-START 之后的 Markdown fenced code 时返回非 nil。"
-  (save-excursion
-    (let ((current-line
-           (progn
-             (goto-char position)
-             (line-beginning-position)))
-          fence-character
-          fence-length)
-      (goto-char body-start)
-      (while (< (point) current-line)
-        (when
-            (looking-at
-             " \\{0,3\\}\\(`\\{3,\\}\\|~\\{3,\\}\\)")
-          (let* ((marker (match-string-no-properties 1))
-                 (character (aref marker 0))
-                 (length (length marker)))
-            (cond
-             ((null fence-character)
-              (setq fence-character character
-                    fence-length length))
-             ((and
-               (= character fence-character)
-               (>= length fence-length))
-              (setq fence-character nil
-                    fence-length nil)))))
-        (forward-line 1))
-      (or
-       fence-character
-       (looking-at
-        " \\{0,3\\}\\(?:`\\{3,\\}\\|~\\{3,\\}\\)")))))
-
-(defun douban--markdown-inline-code-p (position)
-  "POSITION 位于当前 Markdown 行的反引号 code span 时返回非 nil。"
-  (save-excursion
-    (let ((line-start
-           (progn
-             (goto-char position)
-             (line-beginning-position)))
-          delimiter-length)
-      (goto-char line-start)
-      (while (re-search-forward "`+" position t)
-        (let ((escaped
-               (save-excursion
-                 (goto-char (match-beginning 0))
-                 (let ((slashes 0))
-                   (while (eq (char-before) ?\\)
-                     (cl-incf slashes)
-                     (backward-char))
-                   (= (% slashes 2) 1))))
-              (length (- (match-end 0) (match-beginning 0))))
-          (unless escaped
-            (cond
-             ((null delimiter-length)
-              (setq delimiter-length length))
-             ((= delimiter-length length)
-              (setq delimiter-length nil))))))
-      delimiter-length)))
-
-(defun douban--markdown-html-context-p (position body-start)
-  "POSITION 位于 BODY-START 后的 raw HTML 上下文时返回非 nil。"
-  (save-excursion
-    (let ((case-fold-search t)
-          (block-tags
-           '(html body main article section div header footer aside nav
-             p h1 h2 h3 h4 h5 h6 blockquote pre figure hr
-             ul ol table dl details summary))
-          (depth 0)
-          inside-tag
-          inside-comment)
-      (goto-char body-start)
-      (while
-          (re-search-forward
-           "<\\(/?\\)\\([[:alpha:]][[:alnum:]-]*\\)\\(?:[ \t\r\n][^>]*\\)?>"
-           position t)
-        (let ((closing (not (string-empty-p (match-string 1))))
-              (tag (intern (downcase (match-string 2))))
-              (self-closing
-               (string-match-p
-                "/[ \t\r\n]*>\\'"
-                (match-string 0))))
-          (when (and
-                 (memq tag block-tags)
-                 (not self-closing)
-                 (not (memq tag '(hr))))
-            (setq depth
-                  (if closing
-                      (max 0 (1- depth))
-                    (1+ depth))))))
-      (let* ((prefix
-              (buffer-substring-no-properties
-               body-start position))
-             (last-open (string-match-p "<[^>]*\\'" prefix))
-             (search-start 0)
-             last-comment-open
-             last-comment-close)
-        (while (string-match "<!--" prefix search-start)
-          (setq last-comment-open (match-beginning 0)
-                search-start (match-end 0)))
-        (setq search-start 0)
-        (while (string-match "-->" prefix search-start)
-          (setq last-comment-close (match-beginning 0)
-                search-start (match-end 0)))
-        (setq inside-tag last-open
-              inside-comment
-              (and
-               last-comment-open
-               (or
-                (null last-comment-close)
-                (> last-comment-open
-                   last-comment-close)))))
-      (or (> depth 0) inside-tag inside-comment))))
-
-(defun douban--markdown-user-mention-bounds ()
-  "返回光标前 Markdown `@QUERY' 的边界，边界包含 `@'。"
-  (when
-      (and
-       buffer-file-name
-       (eq (douban--file-format buffer-file-name) 'markdown))
-    (let ((end (point)))
-      (save-excursion
-        (skip-chars-backward "^@ \t\r\n")
-        (when
-            (and
-             (< (point) end)
-             (eq (char-before) ?@))
-          (let* ((mention-start (1- (point)))
-                 (body-start (douban--markdown-body-start)))
-            (when
-                (and
-                 (>= mention-start body-start)
-                 (douban--markdown-mention-boundary-p
-                  mention-start)
-                 (not
-                  (douban--markdown-fenced-code-p
-                   mention-start body-start))
-                 (not
-                  (douban--markdown-inline-code-p
-                   mention-start))
-                 (not
-                  (douban--markdown-html-context-p
-                   mention-start body-start)))
-              (cons mention-start end))))))))
-
-(defun douban--cached-user-completions (query)
-  "返回 QUERY 的已关注用户补全，并在当前 buffer 中缓存。"
-  (if-let* ((cached
-            (assoc-string
-             query douban--user-mention-completion-cache)))
-      (cdr cached)
-    (let ((users (douban--search-users query)))
-      (push
-       (cons query users)
-       douban--user-mention-completion-cache)
-      users)))
-
-(defun douban-user-mention-completion-at-point ()
-  "补全光标前的 Markdown `@QUERY' 为豆瓣原生用户 mention。
-候选只包含当前豆瓣账号已经关注的用户。"
-  (when-let* ((bounds (douban--markdown-user-mention-bounds)))
-    (when
-        (condition-case nil
-            (progn
-              (douban--current-buffer-meta)
-              t)
-          (error nil))
-      (let* ((mention-start (car bounds))
-             (start (1+ mention-start))
-             (end (cdr bounds))
-             (query
-              (buffer-substring-no-properties start end)))
-        (unless (string-empty-p query)
-          (let* ((users
-                  (douban--cached-user-completions query))
-                 (candidates
-                  (douban--user-completion-candidates users))
-                 (start-marker
-                  (copy-marker mention-start))
-                 (end-marker
-                  (copy-marker end t)))
-            (list
-             start end candidates
-             :exclusive t
-             :exit-function
-             (lambda (candidate status)
-               (when (memq status '(finished exact))
-                 (unwind-protect
-                     (when-let*
-                          ((source-buffer
-                           (marker-buffer start-marker))
-                          (same-buffer
-                           (eq source-buffer
-                               (marker-buffer end-marker)))
-                          (label
-                           (substring-no-properties
-                            candidate))
-                          (user
-                           (cdr
-                            (assoc-string
-                             label candidates))))
-                       (with-current-buffer source-buffer
-                         (save-excursion
-                           (let ((source-start
-                                  (marker-position
-                                   start-marker))
-                                 (source-end
-                                  (marker-position
-                                   end-marker)))
-                             (when
-                                 (and
-                                  source-start source-end
-                                  (< source-start source-end)
-                                  (eq
-                                   (char-after source-start)
-                                   ?@))
-                               (delete-region
-                                source-start source-end)
-                               (goto-char source-start)
-                               (insert
-                                (douban--user-mention-source
-                                 user)))))))
-                   (set-marker start-marker nil)
-                   (set-marker end-marker nil)))))))))))
 
 (defun douban--validate-content-draft (raw label)
   "验证 Draft RAW 正文非空，并返回字符数；LABEL 表示内容类型。"
@@ -2903,15 +2670,13 @@ entity key 时立即报错。"
   "返回一个新的 JSON 对象。"
   (make-hash-table :test 'equal))
 
-(defun douban--new-draft (&optional toc-headings)
-  "创建一个空的可变 Draft.js 文档。
-TOC-HEADINGS 是当前 HTML 文档已经校验的自动目录标题记录。"
+(defun douban--new-draft ()
+  "创建一个空的可变 Draft.js 文档。"
   (douban--make-draft
    :blocks nil
    :entities (make-hash-table :test 'equal)
    :next-entity 0
-   :next-block 0
-   :toc-headings toc-headings))
+   :next-block 0))
 
 (defun douban--draft-key (draft)
   "在 DRAFT 中分配唯一的区块键。"
@@ -3090,23 +2855,14 @@ TOC-HEADINGS 是当前 HTML 文档已经校验的自动目录标题记录。"
          (not (string-match-p "[[:cntrl:]]" text))
          text)))))
 
-(defun douban--toc-marker-node-p (node)
-  "若 NODE 是 `douban--source-html' 生成的目录标记则返回非 nil。"
-  (and
-   (consp node)
-   (eq (dom-tag node) 'div)
-   (dom-attr node (intern douban--toc-marker-attribute))))
-
 (defun douban--prepare-section-navigation (body)
   "分析并改写 BODY 中的正文标题导航。
 源 fragment 根据 HTML `id' 找到标题后，会改写为豆瓣公开页实际使用的
-`#可见标题文字'。若存在自动目录标记，返回应写入目录的标题记录。"
+`#可见标题文字'。"
   (let ((all-ids (make-hash-table :test #'equal))
         (headings-by-id (make-hash-table :test #'equal))
         (plain-text-counts (make-hash-table :test #'equal))
-        headings
-        fragment-links
-        toc-markers)
+        fragment-links)
     (cl-labels
         ((walk
           (node in-document-reference heading-context)
@@ -3138,7 +2894,6 @@ TOC-HEADINGS 是当前 HTML 文档已经校验的自动目录标题记录。"
                         (list
                          :level level
                          :text plain-text)))
-                  (push record headings)
                   (when plain-text
                     (puthash
                      plain-text
@@ -3154,12 +2909,6 @@ TOC-HEADINGS 是当前 HTML 文档已经校验的自动目录标题记录。"
                       record
                       (gethash identifier headings-by-id))
                      headings-by-id))))
-              (when
-                  (and
-                   (douban--toc-marker-node-p node)
-                   heading-context
-                   (not document-reference))
-                (push node toc-markers))
               (when
                   (and
                    (eq tag 'a)
@@ -3183,11 +2932,7 @@ TOC-HEADINGS 是当前 HTML 文档已经校验的自动目录标题记录。"
                    document-reference
                    child-heading-context)))))))
       (walk body nil t))
-    (setq headings (nreverse headings)
-          fragment-links (nreverse fragment-links)
-          toc-markers (nreverse toc-markers))
-    (when (> (length toc-markers) 1)
-      (user-error "douban: 一篇源稿只能生成一个自动目录"))
+    (setq fragment-links (nreverse fragment-links))
     (dolist (entry fragment-links)
       (let* ((node (car entry))
              (href (cdr entry))
@@ -3225,37 +2970,10 @@ TOC-HEADINGS 是当前 HTML 文档已经校验的自动目录标题记录。"
           (user-error
            "douban: 文章内链接 %s 的可见标题文字重复：%s"
            href text)))
-        (dom-set-attribute node 'href (concat "#" text))))
-    (when-let* ((marker (car toc-markers)))
-      (let* ((depth
-              (string-to-number
-               (dom-attr
-                marker
-                (intern douban--toc-marker-attribute))))
-             (selected
-              (cl-remove-if
-               (lambda (record)
-                 (> (plist-get record :level) depth))
-               headings)))
-        (unless selected
-          (user-error
-           "douban: 自动目录在深度 %d 内找不到正文标题"
-           depth))
-        (dolist (record selected)
-          (let ((text (plist-get record :text)))
-            (unless text
-              (user-error
-               (concat
-                "douban: 自动目录中的标题含有行内格式；"
-                "豆瓣不会为它生成稳定锚点")))
-            (when (> (gethash text plain-text-counts 0) 1)
-              (user-error
-               "douban: 自动目录要求可见标题文字唯一：%s"
-               text))))
-        selected))))
+        (dom-set-attribute node 'href (concat "#" text))))))
 
 (defun douban--highlight-block-node-p (node)
-  "若 NODE 是 Pandoc 生成的豆瓣块高亮容器，则返回非 nil。"
+  "若 NODE 是豆瓣块高亮容器，则返回非 nil。"
   (and
    (consp node)
    (eq (dom-tag node) 'div)
@@ -3269,8 +2987,9 @@ TOC-HEADINGS 是当前 HTML 文档已经校验的自动目录标题记录。"
   (and
    (consp node)
    (eq (dom-tag node) 'div)
-   (or
+    (or
     (douban--node-has-class-p node "center")
+    (douban--node-has-class-p node "org-center")
     (when-let* ((alignment
                 (douban--css-property-value node "text-align")))
       (string-match-p
@@ -3397,7 +3116,7 @@ range 引用该 entity。"
       (list
        :url profile-url
        :name name
-      :display "inline"
+       :display "inline"
        :id id))))
 
 (defun douban--card-data (node)
@@ -3549,36 +3268,6 @@ DEPTH 和 DATA 原样传给 `douban--draft-add-block'。这个入口只适用于
     ((or 'h4 'h5 'h6) "header-four")
     (_ "unstyled")))
 
-(defun douban--add-generated-toc (draft)
-  "把 DRAFT 转换上下文中的标题作为普通目录追加到 DRAFT。"
-  (let ((headings (douban--draft-toc-headings draft)))
-    (unless headings
-      (error "douban: 自动目录标记缺少已校验的标题"))
-    (let ((title (douban--draft-add-block draft "unstyled")))
-      (douban--block-write title "目录")
-      (douban--block-add-inline-range title "BOLD" 0 2))
-    (let (level-stack)
-      (dolist (heading headings)
-        (let* ((level (plist-get heading :level))
-               (text (plist-get heading :text)))
-          (while
-              (and
-               level-stack
-               (>= (car level-stack) level))
-            (pop level-stack))
-          (let* ((depth (min 4 (length level-stack)))
-                 (block
-                  (douban--draft-add-block
-                   draft "unordered-list-item" depth))
-                 (key
-                  (douban--draft-add-entity
-                   draft "LINK" "MUTABLE"
-                   (list :url (concat "#" text))))
-                 (length (douban--utf16-length text)))
-            (douban--block-write block text)
-            (douban--block-add-entity-range block key 0 length))
-          (push level level-stack))))))
-
 (defun douban--walk-container-parts
     (draft parts type depth context)
   "把容器 PARTS 作为 TYPE 区块写入 DRAFT。
@@ -3692,7 +3381,7 @@ ORDERED 决定 Draft 列表区块类型。"
              (douban--walk-inline draft block cell))))))))
 
 (defun douban--figure-image-and-caption (node)
-  "返回标准 Pandoc figure NODE 的 `(IMAGE . CAPTION)'。
+  "返回标准 HTML figure NODE 的 `(IMAGE . CAPTION)'。
 CAPTION 可以为 nil；NODE 不是只含一张图片和至多一个图注的 figure
 时返回 nil。"
   (let* ((children (douban--dom-significant-children node))
@@ -3723,7 +3412,7 @@ CAPTION 可以为 nil；NODE 不是只含一张图片和至多一个图注的 fi
      (and caption (string-trim (dom-inner-text caption))))))
 
 (defun douban--walk-figure (draft node)
-  "若 NODE 符合标准 Pandoc figure 结构，则转换并写入 DRAFT；否则遍历其子节点。"
+  "若 NODE 符合标准 HTML figure 结构，则转换并写入 DRAFT；否则遍历其子节点。"
   (if-let* ((parts (douban--figure-image-and-caption node)))
       (douban--add-figure-image-block draft parts)
     (dolist (child (douban--dom-significant-children node))
@@ -3796,8 +3485,6 @@ CAPTION 可以为 nil；NODE 不是只含一张图片和至多一个图注的 fi
    (t
     (let ((tag (dom-tag node)))
       (cond
-       ((douban--toc-marker-node-p node)
-        (douban--add-generated-toc draft))
        ((douban--h-cite-node-p node)
         (douban--add-card-block draft node))
        ((douban--center-node-p node)
@@ -3893,9 +3580,8 @@ CAPTION 可以为 nil；NODE 不是只含一张图片和至多一个图注的 fi
                html
              (concat "<html><body>" html "</body></html>"))))
          (body (car (dom-by-tag document 'body)))
-         (toc-headings
-          (douban--prepare-section-navigation body))
-         (draft (douban--new-draft toc-headings)))
+         (_ (douban--prepare-section-navigation body))
+         (draft (douban--new-draft)))
     (douban--validate-h-cite-placement body)
     (dolist (child (dom-children body))
       (douban--walk-block-node draft child))
@@ -4448,7 +4134,7 @@ FILE-NAME、FILE-MIME 和 FILE-BYTES 描述可选文件。
           (douban--plz-request
            "GET" image-url
            :headers
-           `(("User-Agent" . ,douban-user-agent)
+           `(("User-Agent" . ,douban--user-agent)
              ("Accept" . "image/*"))
            :decode nil))
          (status (plz-response-status response))
@@ -6434,15 +6120,27 @@ QUERY 必须已经规范化为非空字符串。"
          (cons label platform)))
      platforms)))
 
-(defun douban--markdown-frontmatter-bounds ()
-  "返回当前 buffer 的 Markdown front matter 内容边界。"
-  (save-excursion
-    (goto-char (point-min))
-    (when (looking-at "---[ \t]*\r?$")
-      (forward-line 1)
-      (let ((start (point)))
-        (when (re-search-forward "^---[ \t]*\r?$" nil t)
-          (cons start (line-beginning-position)))))))
+
+
+(defconst douban--org-metadata-block-types
+  '(center-block comment-block drawer dynamic-block example-block
+                 export-block property-drawer quote-block special-block
+                 src-block verse-block)
+  "不能包含文档级豆瓣 metadata 的 Org 元素类型。")
+
+(defun douban--org-metadata-blocked-node-p (node)
+  "NODE 位于非文档级 Org 容器中时返回非 nil。"
+  (let (blocked)
+    (while node
+      (when
+          (memq
+           (org-element-type node)
+           douban--org-metadata-block-types)
+        (setq blocked t))
+      (setq node
+            (org-element-property :parent node)))
+    blocked))
+
 
 (defun douban--metadata-source-index-entry (index kind)
   "返回 INDEX 中 KIND 的字段快照条目。"
@@ -6480,7 +6178,7 @@ QUERY 必须已经规范化为非空字符串。"
     (index kind field value-present-p value)
   "把 KIND 的 FIELD 和简单标量 VALUE 记录到 INDEX。
 VALUE-PRESENT-P 为 nil 时只记录字段存在。重复字段沿用第一次出现的简单
-标量；Markdown 的空值因而可以由后续非空重复字段补足。"
+标量；空值因而可以由后续非空重复字段补足。"
   (let* ((entry
           (douban--metadata-source-index-ensure-entry
            index kind))
@@ -6520,409 +6218,243 @@ VALUE-PRESENT-P 为 nil 时只记录字段存在。重复字段沿用第一次�
      (douban--metadata-source-index-entry index kind)
      :values))))
 
-(defun douban--yaml-simple-scalar (start end)
-  "返回 START 与 END 之间简单 YAML 标量的可读文本。"
-  (let ((text
-         (string-trim
-          (buffer-substring-no-properties start end))))
-    (when
-        (and
-         (> (length text) 1)
-         (memq (aref text 0) '(?\' ?\"))
-         (eq
-          (aref text 0)
-          (aref text (1- (length text)))))
-      (setq text (substring text 1 -1)))
-    (unless (string-empty-p text)
-      text)))
 
-(defun douban--markdown-douban-buffer-region ()
-  "返回当前 Markdown buffer 中 `douban' mapping 的绝对位置区间。"
-  (when-let* ((frontmatter-bounds
-               (douban--markdown-frontmatter-bounds))
-              (frontmatter
-               (buffer-substring-no-properties
-                (car frontmatter-bounds)
-                (cdr frontmatter-bounds)))
-              (douban-region
-               (condition-case nil
-                   (douban--md-douban-region frontmatter)
-                 (error nil))))
-    (cons
-     (+ (car frontmatter-bounds) (car douban-region))
-     (+ (car frontmatter-bounds) (cdr douban-region)))))
 
-(defun douban--markdown-direct-metadata-indentation (region)
-  "返回 Markdown 的豆瓣 metadata 在 REGION 中使用的最小缩进。"
-  (save-excursion
-    (goto-char (car region))
-    (forward-line 1)
-    (let (indentation)
-      (while (< (point) (cdr region))
-        (unless
-            (looking-at
-             "[ \t]*\\(?:#\\|\r?$\\)")
-          (let ((current (current-indentation)))
-            (when
-                (or (null indentation)
-                    (< current indentation))
-              (setq indentation current))))
-        (forward-line 1))
-      indentation)))
 
-(defun douban--markdown-kind-containers (region indentation)
-  "返回 REGION 中位于 INDENTATION 的可识别类型容器。"
-  (when indentation
-    (let (containers)
-      (save-excursion
-        (goto-char (car region))
-        (forward-line 1)
-        (while (< (point) (cdr region))
-          (when
-              (and
-               (= (current-indentation) indentation)
-               (looking-at
-                (concat
-                 "^[ \t]+\\("
-                 (mapconcat
-                  #'symbol-name
-                  douban--metadata-source-kinds
-                  "\\|")
-                 "\\)[ \t]*:")))
-            (push
-             (list
-              :kind
-              (intern
-               (match-string-no-properties 1))
-              :line-start (line-beginning-position)
-              :body-start (line-beginning-position 2)
-              :end nil
-              :indentation indentation
-              :child-indentation nil)
-             containers))
-          (forward-line 1)))
-      (setq containers (nreverse containers))
-      (cl-loop
-       for tail on containers
-       for container = (car tail)
-       for next = (cadr tail)
-       do
-       (setf
-        (plist-get container :end)
-        (if next
-            (plist-get next :line-start)
-          (cdr region))))
-      containers)))
 
-(defun douban--markdown-container-child-indentation (container)
-  "返回 Markdown 类型 CONTAINER 的直接子字段缩进。"
-  (if-let* ((cached
-            (plist-get container :child-indentation)))
-      cached
-    (let ((parent
-           (plist-get container :indentation))
-          indentation)
-      (save-excursion
-        (goto-char (plist-get container :body-start))
-        (while (< (point) (plist-get container :end))
-          (unless
-              (looking-at "[ \t]*\\(?:#\\|\r?$\\)")
-            (let ((current (current-indentation)))
-              (when
-                  (and
-                   (> current parent)
-                   (or
-                    (null indentation)
-                    (< current indentation)))
-                (setq indentation current))))
-          (forward-line 1)))
-      (let ((result (or indentation (+ parent 2))))
-        (plist-put container :child-indentation result)
-        result))))
 
-(defun douban--markdown-metadata-source-index (containers)
-  "一次扫描 CONTAINERS，返回 Markdown metadata 源稿快照。"
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+(defun douban--org-metadata-source-index ()
+  "解析一次当前 Org buffer，返回 metadata 源稿快照。"
+  (require 'org-element)
   (let ((index (douban--make-metadata-source-index)))
-    (dolist (container containers)
-      (let ((kind (plist-get container :kind))
-            (indentation
-             (douban--markdown-container-child-indentation
-              container)))
-        (douban--metadata-source-index-add-kind index kind)
-        (save-excursion
-          (goto-char (plist-get container :body-start))
-          (while (< (point) (plist-get container :end))
-            (when
-                (and
-                 (= (current-indentation) indentation)
-                 (looking-at
-                  "^[ \t]+\\([[:alnum:]-]+\\)[ \t]*:"))
-              (let* ((source-field
-                      (intern
-                       (concat
-                        ":"
-                        (match-string-no-properties 1))))
-                     (field
-                      (douban--metadata-internal-field
-                       kind source-field)))
-                (when field
-                  (let* ((start (match-end 0))
-                         (value
-                          (douban--yaml-simple-scalar
-                           start (line-end-position))))
-                    (douban--metadata-source-index-add-field
-                     index kind field
-                     (and value t) value)))))
-            (forward-line 1)))))
+    (org-element-map
+     (org-element-parse-buffer)
+     'keyword
+     (lambda (node)
+       (unless (douban--org-metadata-blocked-node-p node)
+         (let* ((name (org-element-property :key node))
+                (descriptor
+                 (douban--org-keyword-descriptor name)))
+           (when descriptor
+             (douban--metadata-source-index-add-kind
+              index (nth 1 descriptor))
+             (douban--metadata-source-index-add-field
+              index
+              (nth 1 descriptor)
+              (nth 3 descriptor)
+              t
+              (string-trim
+               (or
+                (org-element-property :value node)
+                ""))))))))
     index))
 
-(defun douban--markdown-container-at-line (containers line-start)
-  "返回 CONTAINERS 中包含 LINE-START 的唯一容器。"
-  (when (= (length containers) 1)
-    (let ((container (car containers)))
-      (and
-       (>= line-start
-           (plist-get container :body-start))
-       (< line-start (plist-get container :end))
-       container))))
-
-(defun douban--markdown-scalar-context
-    (replace-start line-end origin)
-  "返回 Markdown 简单标量在 ORIGIN 处的补全与替换边界。"
-  (let* ((scalar-start
-          (progn
-            (goto-char replace-start)
-            (skip-chars-forward " \t" line-end)
-            (point)))
-         (scalar-end
-          (progn
-            (goto-char line-end)
-            (skip-chars-backward " \t" scalar-start)
-            (point)))
-         (delimiter
-          (and
-           (< scalar-start scalar-end)
-           (char-after scalar-start)))
-         (quoted-p
-          (and
-           (memq delimiter '(?\' ?\"))
-           (> scalar-end (1+ scalar-start))
-           (eq (char-before scalar-end) delimiter)))
-         (completion-start
-          (if quoted-p (1+ scalar-start) scalar-start))
-         (completion-end
-          (if quoted-p (1- scalar-end) scalar-end)))
-    (when
-        (and
-         (<= completion-start origin)
-         (<= origin completion-end))
-      (list
-       :completion-start completion-start
-       :completion-end completion-end
-       :replace-start replace-start
-       :replace-end line-end))))
-
-(defun douban--markdown-platform-item-parent-line
-    (container line-start item-indentation)
-  "返回 CONTAINER 中 LINE-START 平台列表项的父字段行首。
-ITEM-INDENTATION 是当前 `- VALUE' 行的缩进。只有 `platforms' 的直接
-block-sequence 项才会返回非 nil。"
-  (let ((child-indentation
-         (douban--markdown-container-child-indentation
-          container))
-        (body-start (plist-get container :body-start))
-        parent
-        scanning)
-    (when (> item-indentation child-indentation)
-      (setq scanning t)
-      (save-excursion
-        (goto-char line-start)
-        (while
-            (and
-             scanning
-             (> (line-beginning-position) body-start))
-          (forward-line -1)
-          (cond
-           ((looking-at "[ \t]*\\(?:#\\|\r?$\\)"))
-           ((and
-             (= (current-indentation) item-indentation)
-             (looking-at
-              "^[ \t]+-\\(?:[ \t]+\\|[ \t]*\r?$\\)")))
-           ((and
-             (= (current-indentation) child-indentation)
-             (looking-at
-              (concat
-               "^[ \t]+platforms[ \t]*:[ \t]*"
-               "\\(?:#.*\\)?\r?$")))
-            (setq
-             parent (line-beginning-position)
-             scanning nil))
-           (t (setq scanning nil))))))
-    parent))
-
-(defun douban--markdown-platform-item-context
-    (container origin line-start line-end)
-  "返回 CONTAINER 中光标所在平台 block-sequence 项的补全上下文。
-ORIGIN 是原光标位置，LINE-START 与 LINE-END 是当前行边界。"
-  (save-excursion
-    (goto-char line-start)
-    (when
-        (and
-         (eq (plist-get container :kind) 'review)
-         (looking-at
-          "^[ \t]+-\\(?:[ \t]+\\|[ \t]*\r?$\\)"))
-      (let* ((item-indentation (current-indentation))
-             (replace-start (match-end 0))
-             (parent-line
-              (douban--markdown-platform-item-parent-line
-               container line-start item-indentation)))
-        (when parent-line
-          (when-let*
-              ((bounds
-                (douban--markdown-scalar-context
-                 replace-start line-end origin)))
-            (append
-             (list
-               :format 'markdown
-               :slot 'value
-               :kind 'review
-               :container container
-               :field :platforms
-               :source-field :platforms)
-             bounds
-             (list
-               :sequence-item-p t
-               :platform-parent-line parent-line
-               :item-indentation item-indentation))))))))
-
-(defun douban--markdown-metadata-context ()
-  "返回光标所在 Markdown metadata 字段名或值槽的上下文。"
+(defun douban--org-metadata-context ()
+  "返回光标所在 Org metadata 字段名或值槽的上下文。"
   (when
       (and
        buffer-file-name
-       (eq (douban--file-format buffer-file-name) 'markdown))
-    (let ((origin (point))
-          (line-start (line-beginning-position))
-          (line-end (line-end-position)))
-      (save-excursion
-        (goto-char line-start)
-        (when-let* ((region
-                    (douban--markdown-douban-buffer-region)))
-          (let* ((root-indentation
-                  (douban--markdown-direct-metadata-indentation
-                   region))
-                 (containers
-                  (douban--markdown-kind-containers
-                   region root-indentation))
-                 (source-index
-                  (douban--markdown-metadata-source-index
-                   containers))
-                 (container
-                  (douban--markdown-container-at-line
-                   containers line-start))
-                 (child-indentation
-                  (and
-                   container
-                   (douban--markdown-container-child-indentation
-                    container)))
-                 (platform-item-context
-                  (and
-                   container
-                   (when-let*
-                       ((info
-                         (douban--markdown-platform-item-context
-                          container origin line-start line-end)))
-                     (plist-put
-                      info :source-index source-index))))
-                 (slot
+       (eq (douban--file-format buffer-file-name) 'org)
+       (derived-mode-p 'org-mode))
+    (require 'org)
+    (let ((blocked
+           (or
+            (org-in-src-block-p)
+            (douban--org-metadata-blocked-node-p
+             (org-element-context)))))
+      (unless blocked
+        (let ((origin (point))
+              (line-start (line-beginning-position))
+              (line-end (line-end-position)))
+          (save-excursion
+            (goto-char line-start)
+            (let ((case-fold-search t))
+              (when
+                  (looking-at
+                   "^#\\+\\([[:alnum:]_]*\\)\\([ \t]*\\)\\(:\\)?")
+                (let* ((name-start (match-beginning 1))
+                       (name-end (match-end 1))
+                       (name
+                        (upcase
+                         (buffer-substring-no-properties
+                          name-start name-end)))
+                       (colon-p (match-beginning 3))
+                       (replace-start
+                        (and colon-p (match-end 3)))
+                       (source-index
+                        (douban--org-metadata-source-index))
+                       (markers
+                        (douban--metadata-source-index-kinds
+                         source-index))
+                       (prefix-kind
+                        (let ((matches
+                               (cl-remove-if-not
+                                (lambda (candidate)
+                                  (let ((prefix
+                                         (concat
+                                          (douban--org-kind-keyword-name
+                                           candidate)
+                                          "_")))
+                                    (or
+                                     (string-prefix-p prefix name)
+                                     (string-prefix-p name prefix))))
+                                douban--metadata-source-kinds)))
+                          (and (= (length matches) 1)
+                               (car matches))))
+                       (descriptor
+                        (douban--org-keyword-descriptor name))
+                       (field-kind (nth 1 descriptor))
+                       (source-field (nth 2 descriptor))
+                       (field (nth 3 descriptor))
+                       (kind
+                        (or
+                         (and
+                          (= (length markers) 1)
+                          (car markers))
+                         prefix-kind))
+                       (slot
+                        (and kind 'field))
+                       (douban-prefix-p
+                        (and
+                         (>= (length name) 3)
+                         (cl-some
+                          (lambda (candidate)
+                            (or
+                             (string-prefix-p
+                              name candidate)
+                             (string-prefix-p
+                              candidate name)))
+                          douban--org-owned-keyword-names))))
                   (cond
                    ((and
-                     root-indentation
-                     (= (current-indentation)
-                        root-indentation))
-                    'kind)
+                     slot
+                     douban-prefix-p
+                     (<= name-start origin)
+                     (<= origin name-end))
+                    (list
+                     :format 'org
+                     :slot slot
+                     :kind kind
+                     :source-index source-index
+                     :field field
+                     :source-field source-field
+                     :completion-start name-start
+                     :completion-end name-end
+                     :colon-p (and colon-p t)))
                    ((and
-                     container
-                     (= (current-indentation)
-                        child-indentation))
-                    'field))))
-            (or
-             platform-item-context
-             (when
-                 (and
-                  slot
-                  (looking-at
-                   "^[ \t]+\\([[:alnum:]-]*\\)\\([ \t]*\\)\\(:\\)?"))
-               (let* ((name-start (match-beginning 1))
-                     (name-end (match-end 1))
-                     (name
-                      (buffer-substring-no-properties
-                       name-start name-end))
-                     (kind
-                      (and
-                       container
-                       (plist-get container :kind)))
-                     (source-field
-                      (and
-                       (eq slot 'field)
-                       (not (string-empty-p name))
-                       (intern (concat ":" name))))
-                     (field
-                      (and
-                       source-field
-                       (douban--metadata-internal-field
-                        kind source-field)))
-                     (current-kind
-                      (and
-                       (eq slot 'kind)
-                       (member
-                        name
-                        (mapcar
-                         #'symbol-name
-                         douban--metadata-source-kinds))
-                       (intern name)))
-                     (colon-p (match-beginning 3))
-                     (replace-start
-                      (and colon-p (match-end 3))))
-                (cond
-                 ((and
-                   (<= name-start origin)
-                   (<= origin name-end))
-                  (list
-                   :format 'markdown
-                   :slot slot
-                   :kind kind
-                   :current-kind current-kind
-                   :container container
-                   :source-index source-index
-                   :field field
-                   :source-field source-field
-                   :completion-start name-start
-                   :completion-end name-end
-                   :colon-p (and colon-p t)))
-                 ((and
-                   (eq slot 'field)
-                   colon-p
-                   field
-                   (<= replace-start origin))
-                  (when-let*
-                      ((bounds
-                        (douban--markdown-scalar-context
-                         replace-start line-end origin)))
-                    (append
-                     (list
-                       :format 'markdown
-                       :slot 'value
-                       :kind kind
-                       :container container
-                       :source-index source-index
-                       :field field
-                       :source-field source-field)
-                     bounds)))))))))))))
+                     colon-p field
+                     kind
+                     (eq field-kind kind)
+                     (<= replace-start origin))
+                    (let ((completion-start
+                           (progn
+                             (goto-char replace-start)
+                             (skip-chars-forward " \t" line-end)
+                             (point)))
+                          (completion-end
+                           (if (eq field :platforms)
+                               line-end
+                             (progn
+                               (goto-char line-end)
+                               (skip-chars-backward
+                                " \t" replace-start)
+                               (point)))))
+                      (when
+                          (and
+                           (<= completion-start origin)
+                           (<= origin completion-end))
+                        (list
+                         :format 'org
+                         :slot 'value
+                         :kind kind
+                         :source-index source-index
+                         :field field
+                         :source-field source-field
+                         :completion-start completion-start
+                         :completion-end completion-end
+                         :replace-start replace-start
+                         :replace-end line-end))))))))))))))
+
+(defun douban--org-platform-token-context (info origin)
+  "把 Org 平台值槽 INFO 收窄到 ORIGIN 所在的逗号分隔项。"
+  (let ((value-start (plist-get info :replace-start))
+        (value-end (plist-get info :replace-end)))
+    (when
+        (and
+         (<= value-start origin)
+         (<= origin value-end))
+      (let ((token-start
+             (save-excursion
+               (goto-char origin)
+               (if (search-backward "," value-start t)
+                   (1+ (point))
+                 value-start)))
+            (token-end
+             (save-excursion
+               (goto-char origin)
+               (if (search-forward "," value-end t)
+                   (1- (point))
+                 value-end))))
+        (let ((scalar-start
+               (save-excursion
+                 (goto-char token-start)
+                 (skip-chars-forward " \t" token-end)
+                 (point)))
+              (scalar-end
+               (save-excursion
+                 (goto-char token-end)
+                 (skip-chars-backward " \t" token-start)
+                 (point))))
+          (when
+              (and
+               (<= scalar-start origin)
+               (<= origin scalar-end))
+            (let ((result (copy-sequence info)))
+              (setq result
+                    (plist-put
+                     result :completion-start scalar-start))
+              (setq result
+                    (plist-put
+                     result :completion-end scalar-end))
+              (setq result
+                    (plist-put result :replace-start scalar-start))
+              (setq result
+                    (plist-put result :replace-end scalar-end))
+              (plist-put result :list-token-p t))))))))
 
 (defun douban--metadata-context ()
   "返回当前源稿光标所在豆瓣 metadata 的补全上下文。"
-  (douban--markdown-metadata-context))
+  (let ((info
+         (pcase
+             (and
+              buffer-file-name
+              (douban--file-format buffer-file-name))
+           ('org (douban--org-metadata-context)))))
+    (if
+        (and
+         info
+         (eq (plist-get info :format) 'org)
+         (eq (plist-get info :slot) 'value)
+         (eq (plist-get info :field) :platforms))
+        (douban--org-platform-token-context info (point))
+      info)))
 
 (defun douban--metadata-context-fields (info)
   "返回 INFO 所在类型容器已有的内部 metadata 字段。"
@@ -7009,19 +6541,15 @@ ORIGIN 是原光标位置，LINE-START 与 LINE-END 是当前行边界。"
   (let ((colon-p (plist-get info :colon-p))
         (kind (plist-get info :kind))
         name)
-    (setq
-     name
-     (pcase (plist-get info :slot)
-       ('kind (symbol-name object))
-       ('field
-        (let ((source-field
-               (douban--metadata-source-field
-                kind object)))
-          (substring
-           (symbol-name source-field) 1)))))
-  (concat
-   name
-   (unless colon-p ":"))))
+    (setq name
+          (pcase (plist-get info :slot)
+            ('kind
+             (douban--org-kind-keyword-name object))
+            ('field
+             (douban--org-field-keyword-name
+              kind
+              (douban--metadata-source-field kind object)))))
+    (concat name (unless colon-p ":"))))
 
 (defun douban--metadata-object-annotation (object info)
   "返回 INFO 中类型或字段 OBJECT 的补全旁注。"
@@ -7039,27 +6567,7 @@ ORIGIN 是原光标位置，LINE-START 与 LINE-END 是当前行边界。"
                   :description)))))
     (concat "  " description)))
 
-(defun douban--markdown-expand-empty-container
-    (info status)
-  "字段补全结束时把 INFO 的 Markdown 空 mapping 展开。
-只有 STATUS 为 `finished' 且父容器仍写成 `{}` 时才删除 flow mapping。"
-  (when
-      (and
-       (eq status 'finished)
-       (eq (plist-get info :format) 'markdown)
-       (eq (plist-get info :slot) 'field))
-    (when-let* ((container
-                (plist-get info :container)))
-      (save-excursion
-        (goto-char
-         (plist-get container :line-start))
-        (when
-            (re-search-forward
-             ":[ \t]*\\({}\\)[ \t]*\\(?:#.*\\)?$"
-             (line-end-position) t)
-          (delete-region
-           (match-beginning 1)
-           (match-end 1)))))))
+
 
 (defun douban--metadata-field-capf (info)
   "根据字段名或类型容器上下文 INFO 返回 CAPF 数据。"
@@ -7085,11 +6593,7 @@ ORIGIN 是原光标位置，LINE-START 与 LINE-END 是当前行边界。"
                      (assoc-string
                       candidate entries)))
            (douban--metadata-object-annotation
-            (cdr entry) info)))
-       :exit-function
-       (lambda (_candidate status)
-         (douban--markdown-expand-empty-container
-          info status))))))
+            (cdr entry) info)))))))
 
 (defun douban--metadata-value-annotation (field candidate)
   "返回 FIELD 值补全 CANDIDATE 的说明旁注。"
@@ -7167,29 +6671,16 @@ VALUE-FUNCTION 把候选 label 和对象转换为规范值；字段 descriptor �
       (error
        "douban: %S metadata 不接受字段 %S"
        kind field))
-    (unless
-        (eq
-         (douban--metadata-completion-session-format session)
-         'markdown)
-      (error
-       "douban: 不支持的 metadata 源稿格式 %S"
-       (douban--metadata-completion-session-format session)))
-    (let ((scalar
-           (pcase codec
-             ((or 'id 'text 'list)
-              (douban--yaml-string value))
-             ((or 'rating 'boolean 'enum)
-              (format "%s" value))
-             (_
-              (error
-               "douban: metadata 字段 %S 没有可补全的 codec"
-               field)))))
-      (concat
-       (unless
-           (douban--metadata-completion-session-sequence-item-p
-            session)
-         " ")
-       scalar))))
+    (pcase (douban--metadata-completion-session-format session)
+      ('org
+       (concat
+        (unless (eq codec 'list) " ")
+        (format "%s" value)))
+      (_
+       (error
+        "douban: 不支持的 metadata 源稿格式 %S"
+        (douban--metadata-completion-session-format
+         session))))))
 
 (defun douban--metadata-completion-finish
     (session candidate status)
@@ -7470,53 +6961,39 @@ CATEGORY 是 completion metadata 类别。远端搜索已经完成相关性筛�
            (douban--metadata-completion-finish
             session candidate status)))))))
 
-(defun douban--markdown-platform-other-values (info)
-  "返回 Markdown 平台列表 INFO 中当前项以外的值。"
-  (when
-      (plist-get info :sequence-item-p)
-    (let ((parent-line
-           (plist-get info :platform-parent-line))
-          (item-indentation
-           (plist-get info :item-indentation))
-          (current-line (line-beginning-position))
-          (container-end
-           (plist-get
-            (plist-get info :container)
-            :end))
-          values
-          scanning)
-      (save-excursion
-        (goto-char parent-line)
-        (forward-line 1)
-        (setq scanning t)
-        (while
-            (and
-             scanning
-             (< (point) container-end))
-          (cond
-           ((looking-at "[ \t]*\\(?:#\\|\r?$\\)"))
-           ((<=
-             (current-indentation)
-             (douban--markdown-container-child-indentation
-              (plist-get info :container)))
-            (setq scanning nil))
-           ((and
-             (= (current-indentation) item-indentation)
-             (looking-at
-              "^[ \t]+-\\(?:[ \t]+\\|[ \t]*\r?$\\)"))
-            (unless (= (line-beginning-position) current-line)
-              (let* ((start (match-end 0))
-                     (value
-                      (douban--yaml-simple-scalar
-                       start (line-end-position))))
-                (when value
-                  (push value values))))))
-          (forward-line 1)))
-      (nreverse values))))
+
+
+(defun douban--org-platform-other-values (info)
+  "返回 Org 平台 INFO 中当前逗号项以外的值。"
+  (let* ((whole
+          (or
+           (douban--metadata-context-field-value
+            info :platforms)
+           ""))
+         (current
+          (string-trim
+           (buffer-substring-no-properties
+            (plist-get info :completion-start)
+            (plist-get info :completion-end))))
+         (removed nil)
+         values)
+    (dolist (value
+             (mapcar
+              #'string-trim
+              (split-string whole "," t)))
+      (if
+          (and
+           (not removed)
+           (equal value current))
+          (setq removed t)
+        (push value values)))
+    (nreverse values)))
 
 (defun douban--platform-other-values (info)
   "返回 INFO 当前编辑项以外已经选择的平台协议值。"
-  (douban--markdown-platform-other-values info))
+  (pcase (plist-get info :format)
+    ('org
+     (douban--org-platform-other-values info))))
 
 (defun douban--platform-query-matches-p
     (query label platform)
@@ -7601,25 +7078,12 @@ EXCLUDED 是当前项以外已经选择的平台 ID，QUERY 是前端输入。"
              "subject-id"
              (douban--metadata-context-field-value
               info :subject-id))))
-         (current
-          (string-trim
-           (buffer-substring-no-properties
-            (plist-get info :completion-start)
-            (plist-get info :completion-end))))
-         (unsupported-markdown-scalar-p
-          (and
-           (eq (plist-get info :format) 'markdown)
-           (not (plist-get info :sequence-item-p))
-           (or
-            (string-prefix-p "[" current)
-            (string-prefix-p "{" current)
-            (string-search "," current)))))
+         )
     (when
         (and
          (douban--metadata-field-valid-in-context-p info)
          (equal subject-type "game")
-         subject-id
-         (not unsupported-markdown-scalar-p))
+         subject-id)
       (let* ((source-buffer (current-buffer))
              (excluded
               (douban--platform-other-values info))
@@ -7672,7 +7136,7 @@ EXCLUDED 是当前项以外已经选择的平台 ID，QUERY 是前端输入。"
 
 ;;;###autoload
 (defun douban-metadata-completion-at-point ()
-  "补全当前 Markdown 源稿中的豆瓣 metadata。
+  "补全当前 Org 源稿中的豆瓣 metadata。
 字段名候选会按当前稿件类型过滤；枚举值使用可读源稿值并显示中文旁注。
 `subject-id'、`platforms' 和 `anthology-id' 的动态候选都以名称显示，最终
 只把对应的协议 ID 写入源稿。"
@@ -7687,7 +7151,6 @@ EXCLUDED 是当前项以外已经选择的平台 ID，QUERY 是前端输入。"
 
 (defun douban--reset-completion-caches ()
   "清空当前 buffer 的所有豆瓣补全缓存。"
-  (setq douban--user-mention-completion-cache nil)
   (douban--reset-anthology-completion-cache)
   (douban--reset-remote-metadata-completion-caches))
 
@@ -7695,14 +7158,15 @@ EXCLUDED 是当前项以外已经选择的平台 ID，QUERY 是前端输入。"
   "返回当前 buffer 可由 `douban-mode' 编辑的源稿格式。
 文件扩展名必须受支持，且当前 major mode 必须与扩展名对应。"
   (when buffer-file-name
-    (and
-     (eq (douban--file-format buffer-file-name) 'markdown)
-     (derived-mode-p 'markdown-mode)
-     'markdown)))
+    (pcase (douban--file-format buffer-file-name)
+      ('org
+       (and
+        (derived-mode-p 'org-mode)
+        'org)))))
 
 (defvar douban-mode-map (make-sparse-keymap)
   "`douban-mode' 的按键映射。
-本包不预设按键，以免覆盖 Markdown 的上下文命令。")
+本包不预设按键，以免覆盖 Org 的上下文命令。")
 
 (defun douban--disable-editing-support ()
   "从当前 buffer 移除豆瓣编辑辅助并清空缓存。"
@@ -7711,26 +7175,21 @@ EXCLUDED 是当前项以外已经选择的平台 ID，QUERY 是前端输入。"
    #'douban-metadata-completion-at-point
    t)
   (remove-hook
-   'completion-at-point-functions
-   #'douban-user-mention-completion-at-point
-   t)
-  (remove-hook
    'after-revert-hook
    #'douban--reset-completion-caches
    t)
   (dolist
       (variable
-       '(douban--user-mention-completion-cache
-         douban--anthology-completion-cache
+       '(douban--anthology-completion-cache
          douban--subject-completion-cache
          douban--platform-completion-cache))
     (kill-local-variable variable)))
 
 ;;;###autoload
 (define-minor-mode douban-mode
-  "在当前 Markdown 豆瓣源稿中启用编辑辅助。
-本 mode 管理 metadata 补全、正文 `@' 用户补全、补全缓存和
-revert 后的缓存清理。启用时不要求 metadata 已经完整。
+  "在当前 Org 豆瓣源稿中启用编辑辅助。
+本 mode 管理 metadata 补全、补全缓存和 revert 后的缓存清理。启用时不要求
+metadata 已经完整。
 
 发布仍由 `douban-publish' 显式执行，并不依赖本 mode。"
   :init-value nil
@@ -7738,20 +7197,16 @@ revert 后的缓存清理。启用时不要求 metadata 已经完整。
   :keymap douban-mode-map
   :group 'douban
   (if douban-mode
-      (progn
-        (unless (douban--source-editing-format)
+      (let ((format (douban--source-editing-format)))
+        (unless format
           (setq douban-mode nil)
           (douban--disable-editing-support)
           (user-error
-           "douban: 当前 buffer 不是 Markdown 源稿文件"))
+           "douban: 当前 buffer 不是 Org 源稿文件"))
         (douban--reset-completion-caches)
         (add-hook
          'completion-at-point-functions
          #'douban-metadata-completion-at-point
-         nil t)
-        (add-hook
-         'completion-at-point-functions
-         #'douban-user-mention-completion-at-point
          nil t)
         (add-hook
          'after-revert-hook
@@ -8026,25 +7481,26 @@ SUBJECT-TYPE 是 `book'、`movie'、`tv'、`music' 或 `game'。INPUT 为 nil
       (message "douban: 已插入条目 URL：%s" url))
     url))
 
-(defun douban--new-source-content (meta)
-  "返回 META 对应的初始 Markdown 源稿文本。"
+(defun douban--new-source-content (format meta)
+  "返回 FORMAT 和 META 对应的初始源稿文本。"
   (let* ((kind (plist-get meta :kind))
          (title-p
           (plist-get (douban--kind-spec kind) :title-p))
          (title (or (plist-get meta :title) "")))
-    (concat
-     "---\n"
-     (when title-p
-       (format "title: %s\n" (douban--yaml-string title)))
-     (douban--format-yaml-meta meta)
-     "---\n\n")))
+    (pcase format
+      ('org
+       (concat
+        (when title-p
+          (format "#+TITLE: %s\n" title))
+        (douban--format-org-meta meta)
+        "\n")))))
 
 (defun douban--create-source-file (file meta)
   "为 META 创建源稿 FILE，并在新 tab 中启用 `douban-mode'。
 缺少的父目录会一并创建。"
   (let* ((file (expand-file-name file))
-         (content (douban--new-source-content meta)))
-    (douban--require-source-format file)
+         (format (douban--require-source-format file))
+         (content (douban--new-source-content format meta)))
     (make-directory (file-name-directory file) t)
     (with-temp-buffer
       (insert content)
@@ -8055,8 +7511,10 @@ SUBJECT-TYPE 是 `book'、`movie'、`tv'、`music' 或 `game'。INPUT 为 nil
     (let ((buffer (find-file-noselect file)))
       (with-current-buffer buffer
         (unless (douban--source-editing-format)
-          (require 'markdown-mode)
-          (markdown-mode))
+          (pcase format
+            ('org
+             (require 'org)
+             (org-mode))))
         (douban-mode 1))
       (tab-new)
       (switch-to-buffer buffer))
@@ -8077,15 +7535,15 @@ SUBJECT-TYPE 是 `book'、`movie'、`tv'、`music' 或 `game'。INPUT 为 nil
 SUBJECT-TYPE 是 `book'、`movie'、`tv'、`music' 或 `game'，SUBJECT 是
 对应的规范豆瓣条目或游戏 URL。交互调用时先选择 SUBJECT-TYPE，再输入
 规范 URL 或豆瓣条目名称，并从 `douban-review-directory' 读取 FILE。
-FILE 必须使用 `.md' 或 `.markdown' 扩展名。创建成功后在新 tab 中打开源稿并
-启用 `douban-mode'。本命令不打开网页编辑器，也不推断标题。"
+FILE 必须是 Org 文件。创建成功后在新 tab 中打开源稿并启用 `douban-mode'。
+本命令不打开网页编辑器，也不推断标题。"
   (interactive
    (let ((subject-type (douban--read-review-subject-type)))
      (list
       subject-type
       (douban-search-subject subject-type)
       (read-file-name
-       "评论源稿（.md/.markdown）: "
+       "评论源稿（.org）: "
        (douban--ensure-review-directory) nil nil))))
   (let* ((parsed
           (douban--review-subject-from-url

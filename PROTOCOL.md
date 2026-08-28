@@ -16,27 +16,25 @@
 
 | 内容类型 | 表示 | 正文协议 | 远端操作 |
 | --- | --- | --- | --- |
-| `review` | 长评 | Draft.js raw，支持图片、用户 mention 与行内条目引用 | 创建、更新 |
-| `note` | 日记 | Draft.js raw，支持图片、用户 mention 与行内条目引用 | 创建、恢复首次发布、更新 |
+| `review` | 长评 | Draft.js raw，支持图片与行内条目引用 | 创建、更新 |
+| `note` | 日记 | Draft.js raw，支持图片与行内条目引用 | 创建、恢复首次发布、更新 |
 | `annotation` | 当前新式读书笔记 | topic Draft.js raw | 创建、更新 |
-| `status` | 普通广播 | personal/topic Draft.js raw，支持图片、用户 mention 与行内条目引用 | 创建、更新 |
+| `status` | 普通广播 | personal/topic Draft.js raw，支持图片与行内条目引用 | 创建、更新 |
 
-源稿仅支持 Markdown，只接受规范的顶层 `douban:` mapping，且其中必须且
-只能包含 `review`、`note`、`annotation` 或 `status` 中的一个子
-mapping；唯一子 mapping 的名称确定稿件类型，不保存 `kind`，也不从其他
-字段推断。`id`、`privacy` 等是类型子 mapping 内的
-叶子字段。例如：
+源稿只支持 Org。内容类型直接由完整关键字前缀确定，不需要额外的空容器行，
+例如：
 
-```yaml
-douban:
-  review:
-    subject-id: '4908885'
-    subject-type: book
+```org
+#+TITLE: 示例长评
+#+DOUBAN_REVIEW_SUBJECT_ID: 4908885
+#+DOUBAN_REVIEW_SUBJECT_TYPE: book
 ```
 
-新日记与新广播分别使用 `note: {}` 和 `status: {}`。新读书笔记使用带必填
-`subject-id` 的 `annotation` mapping。初次发布省略 `id`；ID 字段一旦出现
-便必须是非空正整数。长评的
+新日记使用空的 `#+DOUBAN_NOTE_ID:`，新广播使用空的
+`#+DOUBAN_STATUS_ID:`；空 ID 表示尚未发布，发布成功后在原类型字段组中写回。
+空的 `DOUBAN_REVIEW`、`DOUBAN_NOTE`、`DOUBAN_ANNOTATION` 和
+`DOUBAN_STATUS` 容器关键字均不支持。新读书笔记使用带必填 `SUBJECT_ID` 的
+annotation 关键字组。各类 ID 可省略或留空；非空时必须是正整数。长评的
 `review.subject-id` 与 `review.subject-type` 必填；每类内容只接受自己的
 叶子字段，未知类型、多个类型、未知字段和跨类型字段即使为空也直接报错。
 图片处理结果不属于 metadata，也不会写回源稿。
@@ -46,7 +44,7 @@ douban:
 四类内容都只保存 `id`；普通广播的 `status.id` 是创建响应返回、更新 API
 使用的 personal topic ID。URL 不属于源稿 metadata，只用于能够可靠得到
 URL 的响应校验和完成消息，不写回源稿。
-标题只取源稿中用户手写的顶层 `title`；不会从条目名称或
+标题只取源稿中用户手写的 `#+TITLE:`；不会从条目名称或
 文件名推导。普通广播没有标题。实现不接受 Typst。
 长评、读书笔记和普通广播都不接受 `original` 叶子字段；原创声明由全局
 `douban-default-original` 与更新语义决定。
@@ -64,18 +62,13 @@ URL 的响应校验和完成消息，不写回源稿。
 声明文本的值；其余自解释候选不加旁注。
 
 这些编辑期能力由 buffer-local `douban-mode` 统一安装。它不会自动扫描或
-识别普通 Markdown 文件；`douban-new-review` 会在新稿中显式启用，其他源稿
-按需手动启用。关闭 mode 会移除本地 CAPF 与 revert hook，并清空用户、文集、
+识别普通 Org 文件；`douban-new-review` 会在新稿中显式启用，其他源稿
+按需手动启用。关闭 mode 会移除本地 CAPF 与 revert hook，并清空文集、
 条目和平台候选缓存。发布命令独立验证源稿，不以 mode 是否启用为条件。
 
 `review.explanation-types` 与 `status.explanation-types` 的源稿值都是严格
-单选的标量枚举。不接受 YAML sequence 或逗号拼接的多值；字段名中的复数
+单选的标量枚举，不接受逗号拼接的多值；字段名中的复数
 不表示列表。
-
-Markdown front matter 的每一层 mapping 都要求 key 唯一；重复 key 会在
-yaml.el 覆盖旧值之前直接报错。为保证 metadata checkpoint 重写
-`douban:` mapping 后不会留下悬空引用，front matter 也不接受 YAML anchor
-或 alias。
 
 ## 协议证据
 
@@ -187,17 +180,8 @@ Referer: https://www.douban.com/search
 GET https://m.douban.com/rexxar/api/v2/game/{subject_id}
 ```
 
-候选同时显示平台名称、缩写和 ID，完成时只把平台 ID 写入源稿。Markdown
-多平台值使用 YAML block sequence，每个列表项独立保存一个 ID：
-
-```yaml
-platforms:
-  - '1'
-  - '2'
-```
-
-YAML flow sequence（例如 `platforms: ['1', '2']`）仍可作为 metadata
-读取，但不提供 completion-at-point。
+候选同时显示平台名称、缩写和 ID，完成时只把平台 ID 写入源稿。单个
+`#+DOUBAN_REVIEW_PLATFORMS:` 关键字值使用逗号分隔的平台 ID。
 
 ### 建立会话
 
@@ -275,8 +259,8 @@ metadata，也不尝试伪装移动客户端。
 
 ## Draft.js 富文本
 
-长评、日记、读书笔记和普通广播共享 Draft.js raw 结构。四者都先把
-Markdown 转成 HTML，再转成 raw。最小结构：
+长评、日记、读书笔记和普通广播共享 Draft.js raw 结构。四者都先把源稿
+用 Emacs 内置的 `ox-html` 转成 HTML，再转成 raw。最小结构：
 
 ```json
 {
@@ -309,16 +293,15 @@ range，而以 `alt` 文字参与当前 block；空白或缺失 `alt` 时不产�
 {"type":"unstyled","data":{"align":"center"}}
 ```
 
-Markdown `<div style="text-align: center">...</div>` 产生居中容器。
-Pandoc 将 Markdown HTML 转为带有
-`text-align` 内联 CSS 的原生 Div，转换器再读取该属性。直接普通段落和
+Org center block 产生居中容器，`ox-html` 输出 `org-center` class，转换器
+识别该表示。直接普通段落和
 标题保留各自 block type，并设置 `align:"center"`；独立图片仍为普通
 atomic IMAGE，不附加 align。列表、引用、代码、表格、分隔线、卡片、
 块高亮和嵌套居中不在这套容器语义内，转换时明确拒绝。
 
 当前实现没有数学公式专用 entity，也不接受 `.typ`。需要公式时应预先渲染为能通过下述 `image/*` 内容校验的图片，再作为图片放入富文本。
 
-### 文章内链接与目录
+### 文章内链接
 
 豆瓣 Draft.js 没有专用目录 entity。普通文章内链接仍是可变 `LINK`：
 
@@ -339,78 +322,28 @@ URL 保持原样。URL 中的 fragment 先按 UTF-8 percent decoding 查找，�
 
 可作为远端锚点的标题必须位于正文顶层的透明 block 容器中、没有脚注或参考
 文献 role、只含文本子节点，并且可见文字唯一。引用、列表、表格等嵌套 block
-内的标题不参与导航。只有实际被 fragment 引用或被自动目录选中的标题才执行
-这些约束，不会限制无导航需求的旧文章。
-
-Markdown 顶层 `toc: true` 会在正文开头插入一个私有 HTML 标记；
-`toc-depth` 接受 1–6，默认 3。
-
-HTML 转 Draft 时，标记展开为一个完整 `BOLD` 的普通“目录”块，随后每个
-标题生成一个 `unordered-list-item` 和覆盖完整文字的 `LINK` entity。
-列表层级按实际标题层次计算，并截断到 Draft.js 支持的最大 depth 4。
-脚注、参考文献及其反向链接带有 `doc-*` role，既不进入目录，也不参与
-fragment 重写。
+内的标题不参与导航。只有实际被 fragment 引用的标题才执行这些约束，不会
+限制无导航需求的旧文章。脚注、参考文献及其反向链接带有 `doc-*` role，
+不参与 fragment 重写。
 
 2026-07-30 已用同一篇[测试长评](https://book.douban.com/review/17735029/)
-临时实发验证：公开 API 返回的标题节点保留了等于可见文字的 `id`，自动目录
-和手写链接生成的两个 fragment `LINK` 都指向该节点。验证后已恢复原始
+临时实发验证：公开 API 返回的标题节点保留了等于可见文字的 `id`，手写链接
+生成的 fragment `LINK` 指向该节点。验证后已恢复原始
 Draft raw、全部编辑表单字段和公开正文，并逐项比对一致。
 
 ### 用户 mention
 
-豆瓣[广播帮助](https://help.douban.com/broadcast?app=1#t0-q5)明确说明
-`@个性域名` 会让对应用户收到消息提醒。当前
-[`personal-topic-editor.42ee6.js`](https://img9.doubanio.com/cuphead/sns-static/personal-topic-editor.42ee6.js)
-并不靠正文字符串猜测用户，而是在输入 `@` 后以当前登录态查询：
-
-```http
-GET https://m.douban.com/rexxar/api/v2/search/user_complete?q={query}&start=0&count=10&ck={ck}
-Referer: https://www.douban.com/
-```
-
-候选必须提供非空 `name`、正整数 `id` 和规范
-`https://www.douban.com/people/{uid}/` URL，并且响应中的 `followed` 必须
-为 true；搜索端点本身可能返回全站用户，实现会在本地丢弃未关注和畸形
-候选。`douban-insert-user-mention` 先让用户选择确定候选，再把三项身份
-写入 Markdown 的私有链接标记；普通用户主页链接和裸 `@名字` 都
-不会自动升级为 mention。
-
-`douban-mode` 把非空 `@query` 暴露给 completion-at-point，候选表为
-exclusive，仍只含已关注用户。YAML front matter、邮箱或 URL 中的 `@`、
-反引号 code span、fenced code 和 raw HTML 不构成补全位置。completion
-前端只有在 `finished` 或 `exact` 状态才把候选固化为源标记；`sole` 只表示
-还能继续 cycling，不能提前提交。回调依靠 marker 回到源 buffer，因此即使
-由 minibuffer 或 Completions buffer 调用也不会误改当前 buffer。
-
-私有链接的可见文字逐字符写成 HTML 数字字符引用。这避免用户名中的强调符、
-反引号、HTML entity、标签形文本或 emoji 被 Pandoc 重新解释。
-
-转换后的 Draft entity 为：
-
-```json
-{
-  "type": "USER",
-  "mutability": "IMMUTABLE",
-  "data": {
-    "name": "用户名",
-    "id": "123",
-    "url": "https://www.douban.com/people/example/",
-    "display": "inline"
-  }
-}
-```
-
-entity range 覆盖正文中的完整 `@用户名`，offset 和 length 仍使用 UTF-16
-code unit。长评、日记、读书笔记和普通广播的正文都提交 Draft.js raw，因此统一保留
-该实体。长评网页编辑器没有提供 mention 输入插件，但这不改变源稿直接构造
-并提交 `USER` entity 的正文协议。
+`douban-insert-user-mention` 使用当前登录态搜索已关注用户，并在 Org 中写入带
+`douban-user-mention:ID` title 的 HTML export snippet。HTML 转 Draft raw 时，
+转换器校验规范用户主页、正整数 ID 和 `@用户名` 文本，再生成不可变的 `USER`
+entity；普通用户主页链接仍生成普通 `LINK`，不会隐式升级。
 
 ### 行内条目引用
 
-Markdown 直接使用普通文字超链接语法，不引入私有标记：
+Org 直接使用普通文字超链接语法，不引入私有标记：
 
-```markdown
-[这本书](https://book.douban.com/subject/4908885/)
+```org
+[[https://book.douban.com/subject/4908885/][这本书]]
 ```
 
 HTML 到 raw 的第一步仍把它生成为可变的 inline `LINK`。若 URL 能被
@@ -461,7 +394,8 @@ fragment、额外路径、用户信息或非默认端口。最终 entity 为：
 </div>
 ```
 
-Pandoc 原样保留该 HTML。进入豆瓣 Draft.js 协议时，`u-url` 的 `href`
+Org 的 `ox-html` export block 原样保留该 HTML。进入豆瓣 Draft.js 协议时，
+`u-url` 的 `href`
 与 `p-name` 的规范化可见文字先生成 `type: "atomic"` 的块和不可变的
 `LINK` 占位 entity；普通外部链接仍生成可变 `LINK` entity，普通豆瓣
 条目链接则按上一节升级为 inline `SUBJECT`。h-cite 内其余通用字段只供
@@ -490,17 +424,14 @@ HTTPS。实现保留服务端返回的其他字段，并统一补上
 
 ### 高亮与块高亮
 
-当前豆瓣编辑器把普通高亮建模为 Draft 行内样式 `MARK`，可以覆盖普通 block 中任意一段文字，并与 `BOLD`、`ITALIC` 等 range 重叠。Markdown 使用 Pandoc `markdown+mark` 的双等号语法：
+当前豆瓣编辑器把普通高亮建模为 Draft 行内样式 `MARK`，可以覆盖普通 block
+中任意一段文字，并与 `BOLD`、`ITALIC` 等 range 重叠。`douban.el` 强制依赖
+并加载 `org-extra-emphasis`，Org 使用它的默认 `!!高亮文字!!` 标记。导出前
+仅在普通段落中把配对分隔符改写成
+`ox-html` 的 `<mark>` export snippet；代码、verbatim、链接与原有 export
+snippet 内的分隔符不参与改写，空对和未闭合对保持原文。
 
-```markdown
-普通段落里的 ==高亮文字==。
-```
-
-`==...==` 不属于 CommonMark 或 GFM；Pandoc 3.0 起在自己的 `markdown`
-reader 中提供非默认 `mark` 扩展。手写的 Markdown 原生 HTML
-`<mark>...</mark>` 始终只生成行内 `MARK`，不会触发块高亮升级。
-
-之后的 Pandoc filter 只检查文档顶层 block：
+Org 导出后的 HTML 规范化只检查文档顶层段落：
 
 - 普通 block 中只包住部分文字时，生成 UTF-16 offset/length 的 `MARK`
   range。
@@ -765,7 +696,7 @@ topic ID 只进入 URL，实际 JSON body 不带 `id`。更新时实现保留远
 
 ### 读书笔记中的引用
 
-本实现不生成编辑器专用的原生摘录块。Markdown 引用按普通 `blockquote`
+本实现不生成编辑器专用的原生摘录块。Org quote block 按普通 `blockquote`
 编译；章节、页码等出处信息需要作为可见正文编写。
 
 ### 读书笔记图片
@@ -814,7 +745,7 @@ Origin: https://www.douban.com
 }
 ```
 
-`content` 不是嵌套 JSON 对象，而是 Draft.js raw 再 `JSON.stringify` 一次所得的字符串；因此整个请求是二次 JSON 编码。正文由 Markdown 经 HTML 转成 raw，可以包含普通格式、图片、链接卡片和块高亮。无图时 `image_ids` 是空字符串；有图时按公共 topic 图片协议提交图片 ID 和 `image_layout: "vertical"`。设置了 `status.anthology-id` 时才增加字符串 `anthology_id`。`group_id` 必须是字符串 `"0"`，不能省略，也不是 JSON 数字 `0`。
+`content` 不是嵌套 JSON 对象，而是 Draft.js raw 再 `JSON.stringify` 一次所得的字符串；因此整个请求是二次 JSON 编码。正文由 Org 经 HTML 转成 raw，可以包含普通格式、图片、链接卡片和块高亮。无图时 `image_ids` 是空字符串；有图时按公共 topic 图片协议提交图片 ID 和 `image_layout: "vertical"`。设置了 `status.anthology-id` 时才增加字符串 `anthology_id`。`group_id` 必须是字符串 `"0"`，不能省略，也不是 JSON 数字 `0`。
 
 ### 广播发布设置
 
@@ -837,7 +768,7 @@ Origin: https://www.douban.com
 表示“无需标注”：首页创建器会发送空字符串，独立编辑器则使用 `N`，
 因此实现按创建/更新分别发送 `explanation_types:""` / `"N"`。长评使用
 同一映射，其中 `none` 发送空字符串。源稿在所有路径上都只接受一个标量
-枚举，不接受 YAML sequence 或逗号分隔的多值字符串。
+枚举，不接受逗号分隔的多值字符串。
 
 `douban-default-reply-limit` 是读书笔记和普通广播统一的回复范围配置，可选
 `all` 或 `following`，默认为 `all`。它用于新建公开内容；读书笔记私密时
