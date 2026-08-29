@@ -11,6 +11,7 @@
 
 - GNU/Linux；
 - Emacs 31.1，并带 SQLite、libxml 与 GnuTLS 支持;
+- [`browser-cookies.el`](https://github.com/DzmingLi/browser-cookies.el) 0.1.0 或更新版本，用于读取浏览器登录态；
 - [`plz`](https://github.com/alphapapa/plz.el) 0.10-pre 或更新版本，用于所有 HTTP 请求；
 - `curl` 可执行程序，作为 `plz` 的底层 HTTP 传输；
 - Emacs 内置的 Org 与 `ox-html`，用于编辑和转换源稿；
@@ -19,7 +20,8 @@
 
 ## Cookie 配置
 
-浏览器和 profile 都由用户显式指定。本包不会扫描、猜测或自动选择 profile：
+浏览器和 profile 都由用户显式指定。底层读取由 `browser-cookies.el` 提供，
+不会扫描、猜测或自动选择 profile：
 
 `douban-cookie-browser` 可设为：
 
