@@ -289,9 +289,6 @@ M-x douban-publish
 `douban-cc-statement`。它支持 CC0 1.0 与六种 CC 4.0 许可，默认不追加；
 声明只进入发布正文，不修改源稿，也不作用于读书笔记或普通广播。
 
-Org 扩展高亮依赖 `org-extra-emphasis`。它随 `douban.el` 一同作为必要依赖
-安装和加载；默认的 `!!文字!!` 标记会发布为豆瓣行内或块高亮。
-
 长评和读书笔记默认不发送或保留关联广播。设置
 `douban-review-send-broadcast` 为非 nil 可以恢复广播：读书笔记直接通过发布
 请求控制；长评网页接口会无条件生成广播，因此默认关闭时，程序先把评论 ID

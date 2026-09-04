@@ -279,7 +279,7 @@ metadata，也不尝试伪装移动客户端。
 }
 ```
 
-实现使用的块包括 `unstyled`、`header-two`、`header-three`、`header-four`、`blockquote`、`code-block`、`highlight-block`、两种 list item 和 `atomic`。行内高亮使用 `MARK` style range，删除线使用 `STRIKETHROUGH`。普通链接先生成可变的 `LINK` entity；其中规范豆瓣条目 URL 会在解析后升级为不可变的 inline `SUBJECT`。图片使用 `IMAGE` entity，分隔线使用 `SEPARATOR` entity，链接卡片使用不可变的 atomic `LINK` 或 `SUBJECT` entity。
+实现使用的块包括 `unstyled`、`header-two`、`header-three`、`header-four`、`blockquote`、`code-block`、两种 list item 和 `atomic`。删除线使用 `STRIKETHROUGH`。普通链接先生成可变的 `LINK` entity；其中规范豆瓣条目 URL 会在解析后升级为不可变的 inline `SUBJECT`。图片使用 `IMAGE` entity，分隔线使用 `SEPARATOR` entity，链接卡片使用不可变的 atomic `LINK` 或 `SUBJECT` entity。
 
 Draft.js 的 offset 与 length 是 JavaScript UTF-16 code unit，不是 Emacs 字符数；非 BMP 字符按两个 code unit 计算。
 
@@ -297,7 +297,7 @@ Org center block 产生居中容器，`ox-html` 输出 `org-center` class，转�
 识别该表示。直接普通段落和
 标题保留各自 block type，并设置 `align:"center"`；独立图片仍为普通
 atomic IMAGE，不附加 align。列表、引用、代码、表格、分隔线、卡片、
-块高亮和嵌套居中不在这套容器语义内，转换时明确拒绝。
+嵌套居中不在这套容器语义内，转换时明确拒绝。
 
 当前实现没有数学公式专用 entity，也不接受 `.typ`。需要公式时应预先渲染为能通过下述 `image/*` 内容校验的图片，再作为图片放入富文本。
 
@@ -421,27 +421,6 @@ HTTPS。实现保留服务端返回的其他字段，并统一补上
 的 entity range 指向与响应同类型的 `LINK` 或 `SUBJECT` entity；
 `mutability` 为 `IMMUTABLE`。三类内容共用这套转换、解析和按 URL
 缓存的协议。
-
-### 高亮与块高亮
-
-当前豆瓣编辑器把普通高亮建模为 Draft 行内样式 `MARK`，可以覆盖普通 block
-中任意一段文字，并与 `BOLD`、`ITALIC` 等 range 重叠。`douban.el` 强制依赖
-并加载 `org-extra-emphasis`，Org 使用它的默认 `!!高亮文字!!` 标记。导出前
-仅在普通段落中把配对分隔符改写成
-`ox-html` 的 `<mark>` export snippet；代码、verbatim、链接与原有 export
-snippet 内的分隔符不参与改写，空对和未闭合对保持原文。
-
-Org 导出后的 HTML 规范化只检查文档顶层段落：
-
-- 普通 block 中只包住部分文字时，生成 UTF-16 offset/length 的 `MARK`
-  range。
-- 文档顶层的普通段落完全由一个非空 mark span 构成时，生成
-  `type: "highlight-block"`、`data: {"align": ""}`；外层 `mark`
-  只决定 block type，不再生成覆盖整段的冗余 `MARK` range。
-
-块高亮中的其他行内样式和普通链接沿用既有转换，但不接受图片或链接卡片。
-多个块高亮需要逐段包裹。标题、列表项、引用和居中段落即使完整包裹，也保留
-原 block type 并生成行内 `MARK`。不再识别 `::: douban-highlight` 容器。
 
 三类内容的正文图片都在每次发布时重新解析，并按每个图片出现位置独立执行各自协议；即使多个位置引用同一图片源，也不会复用先前的处理结果。图片处理结果不会写入源稿 metadata。
 
@@ -745,7 +724,7 @@ Origin: https://www.douban.com
 }
 ```
 
-`content` 不是嵌套 JSON 对象，而是 Draft.js raw 再 `JSON.stringify` 一次所得的字符串；因此整个请求是二次 JSON 编码。正文由 Org 经 HTML 转成 raw，可以包含普通格式、图片、链接卡片和块高亮。无图时 `image_ids` 是空字符串；有图时按公共 topic 图片协议提交图片 ID 和 `image_layout: "vertical"`。设置了 `status.anthology-id` 时才增加字符串 `anthology_id`。`group_id` 必须是字符串 `"0"`，不能省略，也不是 JSON 数字 `0`。
+`content` 不是嵌套 JSON 对象，而是 Draft.js raw 再 `JSON.stringify` 一次所得的字符串；因此整个请求是二次 JSON 编码。正文由 Org 经 HTML 转成 raw，可以包含普通格式、图片和链接卡片。无图时 `image_ids` 是空字符串；有图时按公共 topic 图片协议提交图片 ID 和 `image_layout: "vertical"`。设置了 `status.anthology-id` 时才增加字符串 `anthology_id`。`group_id` 必须是字符串 `"0"`，不能省略，也不是 JSON 数字 `0`。
 
 ### 广播发布设置
 

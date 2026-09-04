@@ -5,7 +5,7 @@
 ;; Author: Dzming Li <i@dzming.li>
 ;; Maintainer: Dzming Li <i@dzming.li>
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "31.1") (browser-cookies "0.1.0") (plz "0.10-pre") (org-extra-emphasis "1.0"))
+;; Package-Requires: ((emacs "31.1") (browser-cookies "0.1.0") (plz "0.10-pre"))
 ;; Keywords: convenience, hypermedia, tools
 ;; URL: https://github.com/DzmingLi/douban.el
 ;; SPDX-License-Identifier: GPL-3.0-or-later
@@ -52,7 +52,6 @@
 (require 'mailcap)
 (require 'xdg)
 (require 'ox-html)
-(require 'org-extra-emphasis)
 
 (defgroup douban nil
   "在 Emacs 中编辑并发布豆瓣内容。"
@@ -1604,73 +1603,6 @@ FIELD 必须出现在 `douban--metadata-value-options' 中。OPTIONAL 非 nil �
     (insert html)
     (libxml-parse-html-region (point-min) (point-max))))
 
-(defconst douban--highlight-block-marker-attribute
-  "data-douban-highlight-block"
-  "HTML 中标记原生块高亮的私有属性。")
-
-(defconst douban--org-highlight-marker-attribute
-  "data-douban-org-highlight"
-  "ox-html 输出中暂时标记 Org `!!...!!' 高亮的私有属性。")
-
-
-
-
-
-(defun douban--org-protected-highlight-ranges (paragraph)
-  "返回 PARAGRAPH 中不解释 `!!' 的 Org 对象位置区间。"
-  (let (ranges)
-    (org-element-map
-        paragraph
-        '(code verbatim link inline-src-block inline-babel-call export-snippet)
-      (lambda (node)
-        (push
-         (cons (org-element-property :begin node)
-               (org-element-property :end node))
-         ranges)))
-    ranges))
-
-(defun douban--org-expand-highlight-markup ()
-  "在当前 Org buffer 中把成对 `!!...!!' 改成 ox-html export snippets。
-代码、verbatim、链接和 export snippet 内的分隔符保持原样；空对与未闭合对
-也保持原样。"
-  (let (replacements)
-    (org-element-map (org-element-parse-buffer) 'paragraph
-      (lambda (paragraph)
-        (let ((ranges (douban--org-protected-highlight-ranges paragraph))
-              open)
-          (save-excursion
-            (goto-char (org-element-property :begin paragraph))
-            (while
-                (re-search-forward
-                 "!!" (org-element-property :end paragraph) t)
-              (let ((position (match-beginning 0)))
-                (unless
-                    (cl-some
-                     (lambda (range)
-                       (and (<= (car range) position)
-                            (< position (cdr range))))
-                     ranges)
-                  (if (null open)
-                      (setq open position)
-                    (unless (= position (+ open 2))
-                      (push
-                       (cons
-                        open
-                        (format
-                         "@@html:<mark %s=\"true\">@@"
-                         douban--org-highlight-marker-attribute))
-                       replacements)
-                      (push
-                       (cons position "@@html:</mark>@@")
-                       replacements))
-                    (setq open nil)))))))))
-    (dolist
-        (replacement
-         (sort replacements (lambda (left right) (> (car left) (car right)))))
-      (goto-char (car replacement))
-      (delete-char 2)
-      (insert (cdr replacement)))))
-
 (defun douban--org-structural-container-p (node)
   "若 NODE 只是 ox-html 添加的结构包装，则返回非 nil。"
   (and
@@ -1721,58 +1653,15 @@ FIELD 必须出现在 `douban--metadata-value-options' 中。OPTIONAL 非 nil �
         (dom-tag node)
         (cons attrs children)))))))
 
-(defun douban--org-highlight-block (node)
-  "把完全由包内 Org 高亮组成的顶层段落 NODE 升级为块高亮。"
-  (let ((children (and (consp node) (douban--dom-significant-children node))))
-    (if
-        (and
-         (consp node)
-         (eq (dom-tag node) 'p)
-         (= (length children) 1)
-         (consp (car children))
-         (eq (dom-tag (car children)) 'mark)
-         (equal
-          (dom-attr
-           (car children) (intern douban--org-highlight-marker-attribute))
-          "true")
-         (not (string-empty-p (string-trim (dom-inner-text (car children))))))
-        `(div
-          ((,(intern douban--highlight-block-marker-attribute) . "true"))
-          (p ,(copy-tree (dom-attributes node))
-             ,@(copy-tree (dom-children (car children)))))
-      node)))
-
-(defun douban--org-strip-highlight-marker (node)
-  "从 NODE 及其后代移除包内 ox-html 高亮私有属性。"
-  (cond
-   ((stringp node) node)
-   ((not (consp node)) node)
-   (t
-    (cons
-     (dom-tag node)
-     (cons
-      (assq-delete-all
-       (intern douban--org-highlight-marker-attribute)
-       (copy-tree (dom-attributes node)))
-      (mapcar #'douban--org-strip-highlight-marker
-              (dom-children node)))))))
-
 (defun douban--org-normalize-html (html)
-  "去掉 ox-html 结构包装，并把包内 Org 高亮标记正规化。"
+  "去掉 ox-html 结构包装。"
   (let* ((dom
           (douban--parse-html (concat "<html><body>" html "</body></html>")))
          (body (car (dom-by-tag dom 'body)))
          (children
-          (cl-mapcan #'douban--org-normalize-node (dom-children body)))
-         (new-body
-          `(body nil
-                 ,@(mapcar
-                    (lambda (node)
-                      (douban--org-strip-highlight-marker
-                       (douban--org-highlight-block node)))
-                    children))))
+          (cl-mapcan #'douban--org-normalize-node (dom-children body))))
     (with-temp-buffer
-      (dolist (child (dom-children new-body))
+      (dolist (child children)
         (if (stringp child)
             (insert (xml-escape-string child))
           (dom-print child nil nil)))
@@ -1790,7 +1679,6 @@ FIELD 必须出现在 `douban--metadata-value-options' 中。OPTIONAL 非 nil �
     (with-temp-buffer
       (insert text)
       (delay-mode-hooks (org-mode))
-      (douban--org-expand-highlight-markup)
       (douban--org-normalize-html
        (org-export-as
         'html nil nil t '(:section-numbers nil :with-toc nil))))))
@@ -2356,16 +2244,6 @@ entity key 时立即报错。"
            href text)))
         (dom-set-attribute node 'href (concat "#" text))))))
 
-(defun douban--highlight-block-node-p (node)
-  "若 NODE 是豆瓣块高亮容器，则返回非 nil。"
-  (and
-   (consp node)
-   (eq (dom-tag node) 'div)
-   (equal
-    (dom-attr
-     node (intern douban--highlight-block-marker-attribute))
-    "true")))
-
 (defun douban--center-node-p (node)
   "若 NODE 是源稿生成的居中容器，则返回非 nil。"
   (and
@@ -2550,7 +2428,6 @@ range 引用该 entity。"
     ((or 'b 'strong) "BOLD")
     ((or 'i 'em) "ITALIC")
     ('code "CODE")
-    ('mark "MARK")
     ('u "UNDERLINE")
     ((or 's 'del 'strike) "STRIKETHROUGH")
     (_ nil)))
@@ -2577,8 +2454,6 @@ range 引用该 entity。"
        ((douban--h-cite-node-p node)
         (user-error
          "douban: h-cite 卡片必须是文档顶层的独立内容"))
-       ((douban--highlight-block-node-p node)
-        (user-error "douban: 块高亮不能嵌入其他正文块"))
        ((douban--center-node-p node)
         (user-error "douban: 居中容器不能嵌入其他正文块"))
        ((douban--user-mention-node-p node)
@@ -2680,8 +2555,6 @@ DEPTH 是列表深度；CONTEXT 是 `list' 或 `quote'，决定嵌套块的语�
          ((douban--dom-whitespace-node-p part))
          ((not (consp part))
           (push part pending))
-         ((douban--highlight-block-node-p part)
-          (user-error "douban: 块高亮不能嵌入%s" label))
          ((douban--center-node-p part)
           (user-error "douban: 居中容器不能嵌入%s" label))
          ((and
@@ -2802,30 +2675,6 @@ CAPTION 可以为 nil；NODE 不是只含一张图片和至多一个图注的 fi
     (dolist (child (douban--dom-significant-children node))
       (douban--walk-block-node draft child))))
 
-(defun douban--walk-highlight-block (draft node)
-  "把 NODE 中每个非空段落转换为 DRAFT 的块高亮。"
-  (let ((children
-         (douban--dom-significant-children node)))
-    (unless children
-      (user-error "douban: 块高亮不能为空"))
-    (dolist (child children)
-      (unless
-          (and
-           (consp child)
-           (eq (dom-tag child) 'p)
-           (not
-            (string-empty-p
-             (string-trim (dom-inner-text child))))
-           (not (dom-by-tag child 'img))
-           (not
-            (douban--dom-has-descendant-p
-             child #'douban--block-container-node-p)))
-        (user-error
-         "douban: 块高亮只能包含非空的普通段落"))
-      (douban--draft-add-inline-block
-       draft "highlight-block" (dom-children child) 0
-       (list :align "")))))
-
 (defun douban--walk-center (draft node)
   "把居中容器 NODE 的段落和标题写入 DRAFT。
 独立图片仍使用普通 IMAGE 原子块；其他块结构一律拒绝。"
@@ -2873,8 +2722,6 @@ CAPTION 可以为 nil；NODE 不是只含一张图片和至多一个图注的 fi
         (douban--add-card-block draft node))
        ((douban--center-node-p node)
         (douban--walk-center draft node))
-       ((douban--highlight-block-node-p node)
-        (douban--walk-highlight-block draft node))
        (t
         (pcase tag
           ((pred (lambda (value)
