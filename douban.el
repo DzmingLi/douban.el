@@ -36,6 +36,9 @@
 ;; This package uses undocumented web endpoints.  They may change without
 ;; notice.  It deliberately exposes only an interactive, one-item-at-a-time
 ;; publishing workflow.
+;;
+;; 豆瓣没有自己的 HTML 方言：Org 先经普通 `ox-html' 导出，再转换成
+;; Draft.js JSON 并发布。这些都在本包内完成。
 
 ;;; Code:
 
@@ -1334,7 +1337,6 @@ FIELD 必须出现在 `douban--metadata-value-options' 中。OPTIONAL 非 nil �
           (ignore-errors (delete-file temporary)))))))
 
 
-
 (defun douban--metadata-entries (meta)
   "从 META 返回按固定顺序排列的源文件子映射条目。
 每个条目是 `(字段-DESCRIPTOR 值)'；nil 值不会写入。"
@@ -1348,19 +1350,6 @@ FIELD 必须出现在 `douban--metadata-value-options' 中。OPTIONAL 非 nil �
      for value = (plist-get meta internal-field)
      when value
      collect (list descriptor value))))
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 ;; Org metadata
@@ -1668,7 +1657,9 @@ FIELD 必须出现在 `douban--metadata-value-options' 中。OPTIONAL 非 nil �
       (buffer-string))))
 
 (defun douban--org-to-html (text)
-  "用 ox-html 将 Org TEXT 导出为供豆瓣转换使用的 HTML fragment。"
+  "用 ox-html 将 Org TEXT 导出为供豆瓣转换使用的 HTML fragment。
+豆瓣没有自己的 HTML 方言：这里就走普通 `html' 后端，卡片语义稍后由
+`douban.el' 根据顶层链接判定。"
   (let ((org-export-use-babel nil)
         (org-confirm-babel-evaluate t)
         (org-export-with-section-numbers nil)
@@ -2302,37 +2293,15 @@ range 引用该 entity。"
   (douban--draft-add-atomic-entity-block
    draft "IMAGE" (douban--image-data image caption)))
 
-(defun douban--h-cite-node-p (node)
-  "若 NODE 是 Microformats2 `h-cite' 根节点，则返回非 nil。"
-  (and (consp node) (douban--node-has-class-p node "h-cite")))
-
-(defun douban--h-cite-property-nodes (node property)
-  "返回 NODE 内具有 Microformats2 PROPERTY class 的元素。"
-  (dom-search
-   node
-   (lambda (child)
-     (and
-      (consp child)
-      (douban--node-has-class-p child property)))))
-
-(defun douban--validate-h-cite-placement (body)
-  "确保 BODY 中的 `h-cite' 只作为顶层独立内容出现。"
-  (let (allowed)
-    (dolist (child (douban--dom-significant-children body))
-      (cond
-       ((douban--h-cite-node-p child)
-        (push child allowed))
-       ((and (consp child) (eq (dom-tag child) 'p))
-        (pcase (douban--dom-significant-children child)
-          (`(,only)
-           (when (douban--h-cite-node-p only)
-             (push only allowed)))))))
-    (dolist
-        (node
-         (dom-search body #'douban--h-cite-node-p))
-      (unless (memq node allowed)
-        (user-error
-         "douban: h-cite 卡片必须是文档顶层的独立内容")))))
+(defun douban--card-link-node-p (node)
+  "若 NODE 是顶层卡片链接，则返回非 nil。
+顶层 `<a>' 表示卡片；普通行内链接总是位于段落内部。URL 的合法性由
+`douban--card-data' 验证。"
+  (and
+   (consp node)
+   (eq (dom-tag node) 'a)
+   (let ((href (dom-attr node 'href)))
+     (and (stringp href) (not (string-empty-p href))))))
 
 (defun douban--user-mention-node-p (node)
   "若 NODE 是带有豆瓣用户 mention 源标记的链接，则返回非 nil。"
@@ -2382,40 +2351,19 @@ range 引用该 entity。"
        :id id))))
 
 (defun douban--card-data (node)
-  "根据 Microformats2 `h-cite' NODE 构造待解析的原子 LINK 数据。"
-  (let* ((url-nodes (douban--h-cite-property-nodes node "u-url"))
-         (name-nodes (douban--h-cite-property-nodes node "p-name")))
-    (unless (= (length url-nodes) 1)
-      (user-error "douban: h-cite 卡片必须只包含一个 u-url"))
-    (unless (= (length name-nodes) 1)
-      (user-error "douban: h-cite 卡片必须只包含一个 p-name"))
-    (let* ((url-node (car url-nodes))
-           (name-node (car name-nodes))
-           (url
-            (and (eq (dom-tag url-node) 'a)
-                 (dom-attr url-node 'href)))
-           (title
-            (string-trim
-             (replace-regexp-in-string
-              "[ \t\r\n]+" " " (dom-inner-text name-node)))))
+  "根据顶层卡片链接 NODE 构造待解析的原子 LINK 数据。
+卡片不需要标题；发布前由豆瓣按 URL 解析出规范标题与封面。"
+  (let ((url (dom-attr node 'href)))
     (unless (douban--http-url-p url)
       (user-error
-       "douban: h-cite 的 u-url 必须是含 host 的 HTTP(S) 链接：%s"
+       "douban: 卡片链接必须是含 host 的 HTTP(S) 链接：%s"
        (or url "")))
-    (when (string-empty-p title)
-      (user-error "douban: h-cite 的 p-name 不能为空"))
-    (list :url url :title title :display "atomic"))))
+    (list :url url :display "atomic")))
 
 (defun douban--add-card-block (draft node)
-  "把 `h-cite' NODE 作为原子 LINK 区块追加到 DRAFT。"
+  "把卡片链接 NODE 作为原子 LINK 区块追加到 DRAFT。"
   (douban--draft-add-atomic-entity-block
    draft "LINK" (douban--card-data node)))
-
-(defun douban--single-card-child (node)
-  "返回 NODE 唯一的 `h-cite' 卡片子节点。"
-  (pcase (douban--dom-significant-children node)
-    (`(,child)
-     (and (douban--h-cite-node-p child) child))))
 
 (defun douban--add-separator-block (draft)
   "向 DRAFT 追加一个原子分隔线区块。"
@@ -2451,9 +2399,6 @@ range 引用该 entity。"
           (douban--block-add-inline-range
            block style offset
            (- (douban--block-offset block) offset))))
-       ((douban--h-cite-node-p node)
-        (user-error
-         "douban: h-cite 卡片必须是文档顶层的独立内容"))
        ((douban--center-node-p node)
         (user-error "douban: 居中容器不能嵌入其他正文块"))
        ((douban--user-mention-node-p node)
@@ -2718,7 +2663,7 @@ CAPTION 可以为 nil；NODE 不是只含一张图片和至多一个图注的 fi
    (t
     (let ((tag (dom-tag node)))
       (cond
-       ((douban--h-cite-node-p node)
+       ((douban--card-link-node-p node)
         (douban--add-card-block draft node))
        ((douban--center-node-p node)
         (douban--walk-center draft node))
@@ -2729,12 +2674,10 @@ CAPTION 可以为 nil；NODE 不是只含一张图片和至多一个图注的 fi
            (dolist (child (dom-children node))
              (douban--walk-block-node draft child)))
           ('p
-           (if-let* ((card (douban--single-card-child node)))
-               (douban--add-card-block draft card)
-             (if-let* ((image (douban--single-image-child node)))
-                 (douban--add-image-block draft image)
-               (douban--draft-add-inline-block
-                draft "unstyled" (dom-children node)))))
+           (if-let* ((image (douban--single-image-child node)))
+               (douban--add-image-block draft image)
+             (douban--draft-add-inline-block
+              draft "unstyled" (dom-children node))))
           ((or 'h1 'h2 'h3 'h4 'h5 'h6)
            (douban--draft-add-inline-block
             draft (douban--heading-block-type tag)
@@ -2813,7 +2756,6 @@ CAPTION 可以为 nil；NODE 不是只含一张图片和至多一个图注的 fi
          (body (car (dom-by-tag document 'body)))
          (_ (douban--prepare-section-navigation body))
          (draft (douban--new-draft)))
-    (douban--validate-h-cite-placement body)
     (dolist (child (dom-children body))
       (douban--walk-block-node draft child))
     (douban--draft-raw draft)))
@@ -5352,7 +5294,6 @@ QUERY 必须已经规范化为非空字符串。"
      platforms)))
 
 
-
 (defconst douban--org-metadata-block-types
   '(center-block comment-block drawer dynamic-block example-block
                  export-block property-drawer quote-block special-block
@@ -5448,27 +5389,6 @@ VALUE-PRESENT-P 为 nil 时只记录字段存在。重复字段沿用第一次�
     (plist-get
      (douban--metadata-source-index-entry index kind)
      :values))))
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 (defun douban--org-metadata-source-index ()
@@ -5797,7 +5717,6 @@ VALUE-PRESENT-P 为 nil 时只记录字段存在。重复字段沿用第一次�
                    object)
                   :description)))))
     (concat "  " description)))
-
 
 
 (defun douban--metadata-field-capf (info)
@@ -6191,7 +6110,6 @@ CATEGORY 是 completion metadata 类别。远端搜索已经完成相关性筛�
          (lambda (candidate status)
            (douban--metadata-completion-finish
             session candidate status)))))))
-
 
 
 (defun douban--org-platform-other-values (info)
