@@ -584,6 +584,40 @@ REFERER 原样作为请求来源；COOKIES 非 nil 时只随本次请求发送�
      ("Referer" . ,referer))
    :allow-redirect-response t))
 
+(defun douban--html-response-p (body)
+  "若 BODY 看起来是 HTML 文档则返回非 nil。"
+  (and
+   (stringp body)
+   (string-match-p
+    "\\`[ \t\r\n]*\\(?:<!DOCTYPE[ \t\r\n]+html\\|<html\\|<head\\|<title\\)"
+    body)
+   t))
+
+(defun douban--summarize-response-body (body)
+  "把响应 BODY 压缩成适合展示的简短说明。
+普通文本过长时截断；HTML 只保留标题和可识别的权限提示，避免把整页
+标记写进 `*Messages*'。"
+  (if (douban--html-response-p body)
+      (let ((title
+             (and
+              (string-match
+               "<title>[ \t\r\n]*\\([^<]*?\\)[ \t\r\n]*</title>" body)
+              (string-trim (match-string 1 body))))
+            (permission
+             (string-match-p
+              "没有访问权限\\|没有权限\\|无权限\\|禁止访问\\|访问被拒绝\\|权限不足"
+              body)))
+        (concat
+         "豆瓣返回 HTML 错误页"
+         (if (and title (not (string-empty-p title)))
+             (format "（%s）" title)
+           "")
+         (if permission "：权限不足" "")
+         "；完整页面已省略"))
+    (if (> (length body) 300)
+        (concat (substring body 0 300) "…")
+      body)))
+
 (defun douban--response-detail (response)
   "从 HTTP RESPONSE 返回适合错误消息的简短正文。"
   (let ((json (plist-get response :json))
@@ -598,7 +632,7 @@ REFERER 原样作为请求来源；COOKIES 非 nil 时只随本次请求发送�
      (and
       (stringp body)
       (not (string-empty-p body))
-      body)
+      (douban--summarize-response-body body))
      "空响应")))
 
 (defun douban--read-html-page (url session label)
@@ -3885,6 +3919,14 @@ nil，以免误删无关广播。"
      "因此没有写回源稿。请到自己的豆瓣主页记录广播链接，不要重复发布。"
      "原错误：" detail))))
 
+(defun douban--mutation-permission-hint (status)
+  "若 STATUS 表示豆瓣拒绝了修改权限，返回给用户的补充说明。"
+  (and
+   (memq status '(401 403))
+   (concat
+    "豆瓣拒绝了本次修改请求（常见于内容正在人工审核、账号被临时限制"
+    "或处于编辑冷却期）。本次请求未生效，请稍后重试。")))
+
 (defun douban--require-mutation-success
     (response create-p label unknown-guidance)
   "要求 RESPONSE 的 HTTP 状态表示 LABEL 成功。
@@ -3907,8 +3949,11 @@ CREATE-P 非 nil 时，除 408 外的明确 4xx 表示请求被拒绝；其他�
         label status unknown-guidance detail)))
      (t
       (user-error
-       "douban: %s失败（HTTP %s）：%s"
-       label status detail)))))
+       "douban: %s失败（HTTP %s）：%s%s"
+       label status detail
+       (if-let* ((hint (douban--mutation-permission-hint status)))
+           (concat " " hint)
+         ""))))))
 
 (defun douban--status-create-result (response)
   "校验广播创建 RESPONSE，并返回响应中的 topic ID。"
