@@ -595,25 +595,17 @@ REFERER 原样作为请求来源；COOKIES 非 nil 时只随本次请求发送�
 
 (defun douban--summarize-response-body (body)
   "把响应 BODY 压缩成适合展示的简短说明。
-普通文本过长时截断；HTML 只保留标题和可识别的权限提示，避免把整页
-标记写进 `*Messages*'。"
+HTML 只保留页面标题，普通文本过长时截断。"
   (if (douban--html-response-p body)
-      (let ((title
-             (and
-              (string-match
-               "<title>[ \t\r\n]*\\([^<]*?\\)[ \t\r\n]*</title>" body)
-              (string-trim (match-string 1 body))))
-            (permission
-             (string-match-p
-              "没有访问权限\\|没有权限\\|无权限\\|禁止访问\\|访问被拒绝\\|权限不足"
-              body)))
-        (concat
-         "豆瓣返回 HTML 错误页"
-         (if (and title (not (string-empty-p title)))
-             (format "（%s）" title)
-           "")
-         (if permission "：权限不足" "")
-         "；完整页面已省略"))
+      (or
+       (let ((title
+              (and
+               (string-match
+                "<title>[ \t\r\n]*\\([^<]*?\\)[ \t\r\n]*</title>"
+                body)
+               (string-trim (match-string 1 body)))))
+         (and title (not (string-empty-p title)) title))
+       "HTML 错误页")
     (if (> (length body) 300)
         (concat (substring body 0 300) "…")
       body)))
@@ -3791,8 +3783,8 @@ nil，以免误删无关广播。"
   (and
    (memq status '(401 403))
    (concat
-    "豆瓣拒绝了本次修改请求（常见于内容正在人工审核、账号被临时限制"
-    "或处于编辑冷却期）。本次请求未生效，请稍后重试。")))
+    "豆瓣拒绝了本次修改请求（通常处于编辑冷却期）。"
+    "本次请求未生效，请等待足够的时间后重试。")))
 
 (defun douban--require-mutation-success
     (response create-p label unknown-guidance)
