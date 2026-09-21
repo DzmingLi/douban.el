@@ -278,9 +278,9 @@ M-x douban-publish
 =douban-cc-statement=。它支持 CC0 1.0 与六种 CC 4.0 许可，默认不追加；
 声明只进入发布正文，不修改源稿，也不作用于读书笔记或普通广播。
 
-长评和读书笔记默认不发送或保留关联广播。设置
-=douban-review-send-broadcast= 为非 nil 可以恢复广播：读书笔记直接通过发布
-请求控制；长评网页接口会无条件生成广播，因此默认关闭时，程序先把评论 ID
+长评和读书笔记默认发送并保留关联广播。设置
+=douban-review-send-broadcast= 为 nil 可以关闭广播：读书笔记直接通过发布
+请求控制；长评网页接口会无条件生成广播，因此关闭时，程序先把评论 ID
 写回源稿，再从首页唯一核对并删除对应广播。长评广播可能短暂可见；若清理
 失败，错误会明确说明评论已经发布，源稿中的 ID 也会保留，切勿重复发布。
 更新已有长评不会删除历史广播。
@@ -295,5 +295,5 @@ M-x douban-publish
 | =douban-review-directory=           | XDG 文档目录下的 =douban/reviews/= | =douban-new-review= 默认创建源稿的目录                |
 | =douban-default-reply-limit=        | =all=                           | 新建公开读书笔记和广播的回复范围；也用于读书笔记从私密切回公开 |
 | =douban-default-original=           | =t=                             | 长评、读书笔记和普通广播的全局原创声明开关               |
-| =douban-review-send-broadcast=      | =nil=                           | 长评和读书笔记是否发送并保留关联广播                     |
+| =douban-review-send-broadcast=      | =t=                             | 长评和读书笔记是否发送并保留关联广播                     |
 | =douban-cc-statement=               | =nil=                           | 长评和日记末尾的可选 CC 许可声明                         |

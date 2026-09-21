@@ -109,7 +109,7 @@
   :type 'boolean
   :group 'douban)
 
-(defcustom douban-review-send-broadcast nil
+(defcustom douban-review-send-broadcast t
   "非 nil 时，发布长评或读书笔记时发送并保留对应广播。
 读书笔记通过请求字段直接控制是否发送广播。长评网页接口在创建时总会自动
 生成广播；本选项为 nil 时，程序会先把新评论 ID 安全写回源稿，再删除唯一
