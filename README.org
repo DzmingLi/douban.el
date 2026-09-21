@@ -225,29 +225,10 @@ M-x douban-search-subject
 #+end_example
 
 选择品类并输入名称（也可以直接输入规范 URL）后，命令会让你选择搜索结果，
-并把规范条目 URL 直接插入光标处。随后可以把 URL 用在普通 Org 链接或下面的
-链接卡片中。这里的规范 URL 指 HTTPS 的
+并把规范条目 URL 直接插入光标处。随后可以把 URL 用在普通 Org 链接中。
+这里的规范 URL 指 HTTPS 的
 =book/movie/music.douban.com/subject/ID/= 或 =www.douban.com/game/ID/=，
 不带 query、fragment 或额外路径。
-
-** 链接卡片
-
-链接卡片是豆瓣原生的 =LINK= / =SUBJECT= 原子卡片；源稿只需要提供一个链接，
-标题和封面由豆瓣按 URL 解析。豆瓣没有自己的 HTML 方言，把链接单独放进
-=#+begin_export html=，让它在导出的 HTML 里成为顶层元素即可：
-
-#+begin_src org
-#+begin_export html
-<a href="https://book.douban.com/subject/4908885/"></a>
-#+end_export
-#+end_src
-
-链接必须是带主机名的绝对 HTTP 或 HTTPS URL。=<a>= 的文字可省略；即使写了
-也只是占位，发布前会被服务端返回的规范标题覆盖。判断依据是 =<a>= 在导出的
-HTML 里是不是顶层元素：段落里的普通链接仍然是普通链接，不会被当成卡片。
-
-发布前，程序通过豆瓣当前的 URL 解析接口取得卡片数据；服务端按 URL 返回原生
-=LINK= 或 =SUBJECT= 原子卡片。
 
 ** 发布
 

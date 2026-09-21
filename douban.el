@@ -1692,8 +1692,7 @@ FIELD 必须出现在 `douban--metadata-value-options' 中。OPTIONAL 非 nil �
 
 (defun douban--org-to-html (text)
   "用 ox-html 将 Org TEXT 导出为供豆瓣转换使用的 HTML fragment。
-豆瓣没有自己的 HTML 方言：这里就走普通 `html' 后端，卡片语义稍后由
-`douban.el' 根据顶层链接判定。"
+豆瓣没有自己的 HTML 方言，这里直接使用普通 `html' 后端。"
   (let ((org-export-use-babel nil)
         (org-confirm-babel-evaluate t)
         (org-export-with-section-numbers nil)
@@ -2327,16 +2326,6 @@ range 引用该 entity。"
   (douban--draft-add-atomic-entity-block
    draft "IMAGE" (douban--image-data image caption)))
 
-(defun douban--card-link-node-p (node)
-  "若 NODE 是顶层卡片链接，则返回非 nil。
-顶层 `<a>' 表示卡片；普通行内链接总是位于段落内部。URL 的合法性由
-`douban--card-data' 验证。"
-  (and
-   (consp node)
-   (eq (dom-tag node) 'a)
-   (let ((href (dom-attr node 'href)))
-     (and (stringp href) (not (string-empty-p href))))))
-
 (defun douban--user-mention-node-p (node)
   "若 NODE 是带有豆瓣用户 mention 源标记的链接，则返回非 nil。"
   (and
@@ -2383,21 +2372,6 @@ range 引用该 entity。"
        :name name
        :display "inline"
        :id id))))
-
-(defun douban--card-data (node)
-  "根据顶层卡片链接 NODE 构造待解析的原子 LINK 数据。
-卡片不需要标题；发布前由豆瓣按 URL 解析出规范标题与封面。"
-  (let ((url (dom-attr node 'href)))
-    (unless (douban--http-url-p url)
-      (user-error
-       "douban: 卡片链接必须是含 host 的 HTTP(S) 链接：%s"
-       (or url "")))
-    (list :url url :display "atomic")))
-
-(defun douban--add-card-block (draft node)
-  "把卡片链接 NODE 作为原子 LINK 区块追加到 DRAFT。"
-  (douban--draft-add-atomic-entity-block
-   draft "LINK" (douban--card-data node)))
 
 (defun douban--add-separator-block (draft)
   "向 DRAFT 追加一个原子分隔线区块。"
@@ -2697,8 +2671,6 @@ CAPTION 可以为 nil；NODE 不是只含一张图片和至多一个图注的 fi
    (t
     (let ((tag (dom-tag node)))
       (cond
-       ((douban--card-link-node-p node)
-        (douban--add-card-block draft node))
        ((douban--center-node-p node)
         (douban--walk-center draft node))
        (t
@@ -2814,111 +2786,6 @@ CAPTION 可以为 nil；NODE 不是只含一张图片和至多一个图注的 fi
        count douban-minimum-review-length))
     count))
 
-
-;;;; Link cards
-
-(defconst douban--card-endpoint
-  "https://m.douban.com/rexxar/api/v2/get_url_info"
-  "把 URL 解析为当前编辑器卡片的端点。")
-
-(defun douban--card-result (response source-url)
-  "从 RESPONSE 读取 SOURCE-URL 对应的规范卡片实体。"
-  (let* ((status (plist-get response :status))
-         (json (plist-get response :json)))
-    (unless (<= 200 status 299)
-      (user-error
-       "douban: 无法解析卡片 %s（HTTP %s）"
-       source-url status))
-    (let* ((entity-type (plist-get json :type))
-           (source (plist-get json :data))
-           (title
-            (and
-             (listp source)
-             (douban--metadata-text
-              "卡片 title" (plist-get source :title))))
-           (url (and (listp source) (plist-get source :url))))
-      (setq source (copy-sequence source))
-      (pcase entity-type
-        ("LINK"
-         (unless (and title (douban--http-url-p url))
-           (user-error
-            "douban: 卡片响应缺少规范字段：%s"
-            source-url)))
-        ("SUBJECT"
-         (let ((id
-                (douban--metadata-id
-                 "卡片 id" (plist-get source :id)))
-               (type
-                (douban--metadata-text
-                 "卡片 type" (plist-get source :type))))
-           (unless
-               (and id type title
-                    (douban--https-douban-url-p url))
-             (user-error
-              "douban: 卡片响应缺少规范字段：%s"
-              source-url))
-           (setq source (plist-put source :id id))
-           (setq source (plist-put source :type type))))
-        (_
-         (user-error
-          "douban: URL 不能生成卡片：%s"
-          source-url)))
-      (setq source (plist-put source :title title))
-      (let ((cover
-             (plist-get
-              source
-              (if (equal entity-type "LINK")
-                  :cover_url
-                :cover))))
-        (when (and cover
-                   (not (eq cover :json-null))
-                   (not (douban--https-url-p cover)))
-          (error "douban: 卡片封面不是 HTTPS URL")))
-      (list
-       :type entity-type
-       :data (plist-put source :display "atomic")))))
-
-(defun douban--resolve-card (url)
-  "通过豆瓣当前 URL 解析接口取得 URL 的卡片实体。"
-  (douban--card-result
-   (douban--read-json-endpoint
-    (format
-     (concat
-      "%s?url=%s&need_card=1&editor_type=group")
-     douban--card-endpoint
-     (url-hexify-string url))
-    "https://www.douban.com/")
-   url))
-
-(defun douban--rewrite-draft-cards (raw)
-  "解析 RAW 中显式原子卡片的 LINK entity。"
-  (let ((entities (douban--draft-referenced-entities raw))
-        (cache (make-hash-table :test 'equal)))
-    (cl-labels
-        ((resolve
-          (url)
-          (or
-           (gethash url cache)
-           (progn
-             (message "douban: 解析卡片 %s..." url)
-             (let ((result (douban--resolve-card url)))
-               (puthash url result cache)
-               result)))))
-      (dolist (entity entities)
-        (when
-            (and
-             (equal (plist-get entity :type) "LINK")
-             (equal
-              (plist-get (plist-get entity :data) :display)
-              "atomic"))
-          (let* ((source (plist-get entity :data))
-                 (url (plist-get source :url))
-                 (resolved (resolve url)))
-            (setf (plist-get entity :type)
-                  (plist-get resolved :type))
-            (setf (plist-get entity :data)
-                  (plist-get resolved :data)))))
-    raw)))
 
 ;;;; Web editor context
 
@@ -6668,9 +6535,7 @@ CC 声明不参与非空或最低字数校验。"
            (raw
             (if (eq html source-html)
                 source-raw
-              (douban--html-to-draft html)))
-           (raw
-            (douban--rewrite-draft-cards raw)))
+              (douban--html-to-draft html))))
       (list raw character-count base-directory))))
 
 (defun douban--publish-review-file (file meta)
