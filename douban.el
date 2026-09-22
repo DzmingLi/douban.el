@@ -5,7 +5,7 @@
 ;; Author: Dzming Li <i@dzming.li>
 ;; Maintainer: Dzming Li <i@dzming.li>
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "31.1") (browser-cookies "0.1.0") (plz "0.10-pre"))
+;; Package-Requires: ((emacs "31.1") (plz "0.10-pre"))
 ;; Keywords: convenience, hypermedia, tools
 ;; URL: https://github.com/DzmingLi/douban.el
 ;; SPDX-License-Identifier: GPL-3.0-or-later
@@ -43,7 +43,6 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'browser-cookies)
 (require 'subr-x)
 (require 'plz)
 (require 'url)
@@ -199,32 +198,18 @@ KINDS 是源稿中已有的类型容器；ENTRIES 按类型保存已有字段和
 
 ;;;; Cookies
 
-(defcustom douban-cookie-browser 'firefox
-  "提供豆瓣登录 Cookie 的浏览器。"
-  :type '(choice
-          (const :tag "Firefox" firefox)
-          (const :tag "Chromium" chromium)
-          (const :tag "Google Chrome" chrome))
+(defcustom douban-cookie-function nil
+  "Function used to obtain cookies for a URL.
+The function receives one absolute HTTP(S) URL and returns an alist of
+(NAME . VALUE) string pairs in transmission order."
+  :type '(choice (const :tag "未配置" nil) function)
   :group 'douban)
 
-(defcustom douban-cookie-profile-directory nil
-  "用于读取豆瓣 Cookie 的显式浏览器 profile 目录。"
-  :type '(choice (const :tag "未配置" nil)
-                 (directory :must-match t))
-  :group 'douban)
-
-(defcustom douban-firefox-origin-attributes ""
-  "豆瓣 Cookie 使用的准确 Firefox `originAttributes' 值。"
-  :type 'string
-  :group 'douban)
-
-(defun douban--read-browser-cookies (url)
-  "从显式配置的浏览器 profile 读取适用于完整 URL 的 Cookie。"
-  (browser-cookies-get
-   url
-   :browser douban-cookie-browser
-   :profile-directory douban-cookie-profile-directory
-   :origin-attributes douban-firefox-origin-attributes))
+(defun douban--read-cookies (url)
+  "通过 `douban-cookie-function' 读取适用于完整 URL 的 Cookie。"
+  (unless (functionp douban-cookie-function)
+    (user-error "douban-cookie-function 尚未配置"))
+  (funcall douban-cookie-function url))
 
 (defun douban--cookie-put (cookies name value)
   "返回更新后的 COOKIES，其中 NAME 只出现一次且值为 VALUE。"
@@ -710,7 +695,7 @@ BODY、CONTENT-TYPE 与 HEADERS 原样传给 JSON HTTP 层。CREATE-P 非 nil
 URL 同时绑定为请求来源，host 从 URL 解析。EXISTING-CK 非 nil 时覆盖
 该 URL Cookie 中的同名值；否则采用浏览器数据库中的有效 `ck'。每次调用都
 独立读取传入 URL 对应的 Cookie，不跨 URL 复用 Cookie jar。"
-  (let* ((cookies (douban--read-browser-cookies url))
+  (let* ((cookies (douban--read-cookies url))
          (existing-ck (douban--ck-value existing-ck))
          (ck
           (or
@@ -931,9 +916,8 @@ FIELD 必须出现在 `douban--metadata-value-options' 中。OPTIONAL 非 nil �
        :description "长评 ID；初次发布可留空，发布后自动写回")
       (:source :subject-id
        :codec id
-       :description "被评论的豆瓣条目 ID"
-       :completion subject
-       :required t)
+       :description "被评论的豆瓣条目 ID；仅新建长评时必填"
+       :completion subject)
       (:source :subject-type
        :codec enum
        :description "条目品类"
@@ -1266,6 +1250,10 @@ FIELD 必须出现在 `douban--metadata-value-options' 中。OPTIONAL 非 nil �
                meta
                (plist-put
                 meta internal-field normalized))))))
+      (when (and (eq kind 'review)
+                 (not (plist-get meta :review-id))
+                 (not (plist-get meta :subject-id)))
+        (error "douban: review metadata 缺少 subject-id"))
       (when
           (and
            (eq kind 'review)
@@ -1374,7 +1362,10 @@ FIELD 必须出现在 `douban--metadata-value-options' 中。OPTIONAL 非 nil �
      (douban--metadata-descriptor-internal-field
       descriptor)
      for value = (plist-get meta internal-field)
-     when value
+     when (and value
+               (not (and (eq kind 'review)
+                         (plist-get meta :review-id)
+                         (eq internal-field :subject-id))))
      collect (list descriptor value))))
 
 
@@ -2877,7 +2868,8 @@ GAME-P 非 nil 时一并读取游戏评论类型。"
            (douban--dom-input-value
             form "review[subject_id]")))
          (credential (douban--upload-credential html)))
-    (unless (and ck subject-id)
+    (unless (and ck (or subject-id
+                        (douban--javascript-variable html "_REVIEW_ID" 'id)))
       (user-error "douban: 评论编辑页不可用"))
     (list
      :ck ck
@@ -2962,9 +2954,9 @@ GAME-P 非 nil 时一并读取游戏评论类型。"
     (unless
         (and
          (equal expected-id (plist-get state :review-id))
-         (equal
-          expected-subject-id
-          (plist-get state :subject-id)))
+         (or expected-id
+             (equal expected-subject-id
+                    (plist-get state :subject-id))))
       (user-error "douban: 评论编辑页与当前源稿身份不匹配"))
     (setq state (plist-put state :app-name app-name))
     (setf
@@ -4414,8 +4406,6 @@ nil，不影响读书笔记本身的创建或更新。"
   (let ((fields
          (list
             (cons "is_rich" "1")
-            (cons "review[subject_id]"
-                  (plist-get meta :subject-id))
             (cons "review[title]" title)
             (cons "review[introduction]"
                   (or (plist-get meta :introduction) ""))
@@ -4441,6 +4431,9 @@ nil，不影响读书笔记本身的创建或更新。"
                     (plist-get meta :explanation-types))
                    ""))
             (cons "ck" (douban--session-ck session)))))
+    (unless (plist-get meta :review-id)
+      (push (cons "review[subject_id]" (plist-get meta :subject-id))
+            fields))
       (if
           (string-equal
            (douban--session-state-get session :app-name)
@@ -4909,7 +4902,7 @@ COOKIES 非 nil 时随请求发送，以便列出当前用户的私有文集。"
          douban--anthology-completion-cache
          (douban--anthologies
           user-id
-          (douban--read-browser-cookies
+          (douban--read-cookies
            (douban--anthology-list-url user-id 0 50)))))
     douban--anthology-completion-cache))
 

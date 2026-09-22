@@ -12,7 +12,8 @@
 
 - GNU/Linux；
 - Emacs 31.1，并带 SQLite、libxml 与 GnuTLS 支持；
-- [[https://github.com/DzmingLi/browser-cookies.el][browser-cookies.el]] 0.1.0 或更新版本，用于读取浏览器登录态；
+- 一个 Cookie 函数：接收完整 URL，返回 =((NAME . VALUE) ...)=；例如
+  [[https://github.com/DzmingLi/firefox-cookies.el][firefox-cookies.el]] 提供的 =firefox-cookies-get=；
 - [[https://github.com/alphapapa/plz.el][plz]] 0.10-pre 或更新版本，用于所有 HTTP 请求；
 - =curl= 可执行程序，作为 =plz= 的底层 HTTP 传输；
 - Emacs 内置的 Org 与 =ox-html=，用于编辑和转换源稿；
@@ -20,25 +21,22 @@
 
 * Cookie 配置
 
-浏览器和 profile 都由用户显式指定。底层读取由 =browser-cookies.el= 提供，
-不会扫描、猜测或自动选择 profile。
+本包不配置或识别具体浏览器，只调用 =douban-cookie-function=。如果使用
+=firefox-cookies.el= 实现，请在 Emacs 配置中加载它、选择 Firefox profile，
+再把函数交给本包：
 
-=douban-cookie-browser= 可设为：
+#+begin_src emacs-lisp
+(require 'firefox-cookies)
+(setq firefox-cookies-profile-directory
+      "~/.mozilla/firefox/xxxxxxxx.default-release/")
+(setq douban-cookie-function #'firefox-cookies-get)
 
-- =firefox=
-- =chromium=
-- =chrome=
+;; Firefox Multi-Account Container 才需要：
+;; (setq firefox-cookies-origin-attributes "^userContextId=2")
+#+end_src
 
-=douban-cookie-profile-directory= 必须指向所选 profile：
-
-- Firefox：包含 =cookies.sqlite=；
-- Chromium、Chrome：包含 =Network/Cookies=。
-
-Chromium 系浏览器的 Cookie 可能需要从 Linux 桌面的 Secret Service 或
-KWallet 取得解密密钥。
-
-Firefox Container 还应显式设置对应的 =originAttributes=，普通非 Container
-profile 使用空字符串。
+Firefox profile 不会被自动扫描或猜测；Container 等实现细节由 Cookie 函数
+自身配置，而不是由 =douban.el= 配置。
 
 * 使用
 
@@ -81,7 +79,7 @@ M-x douban-mode
 | 字段                 | 含义                                                                 |
 |----------------------+----------------------------------------------------------------------|
 | =id=                 | 初次发布时可省略或留空；创建成功后写回，非空时更新这篇长评           |
-| =subject-id=         | 必填，豆瓣条目 ID；新长评可在值槽按名称动态补全                      |
+| =subject-id=         | 仅新建时必填，发布取得长评 ID 后自动移除；可按名称动态补全                      |
 | =subject-type=       | 必填，必须是 =book=、=movie=、=tv=、=music= 或 =game=                |
 | =introduction=       | 可选导语，最多 140 个 UTF-16 code unit                               |
 | =rating=             | 可选，整数 1–5                                                       |
@@ -257,9 +255,6 @@ M-x douban-publish
 
 | 变量                                | 默认值                          | 作用                                                     |
 |-------------------------------------+---------------------------------+----------------------------------------------------------|
-| =douban-cookie-browser=             | =firefox=                       | Cookie 来源浏览器                                        |
-| =douban-cookie-profile-directory=   | =nil=                           | 必须显式设置的 profile 目录                              |
-| =douban-firefox-origin-attributes=  | =""=                            | Firefox 普通上下文或 Container 值                        |
 | =douban-review-directory=           | XDG 文档目录下的 =douban/reviews/= | =douban-new-review= 默认创建源稿的目录                |
 | =douban-default-reply-limit=        | =all=                           | 新建公开读书笔记和广播的回复范围；也用于读书笔记从私密切回公开 |
 | =douban-default-original=           | =t=                             | 长评、读书笔记和普通广播的全局原创声明开关               |
