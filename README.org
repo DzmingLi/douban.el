@@ -41,9 +41,17 @@ Firefox profile 不会被自动扫描或猜测；Container 等实现细节由 Co
 报错。创建成功后，源稿会在一个新 tab 中打开并启用 =douban-mode=。本命令
 只生成本地模板，不打开网页编辑器。
 
+** 新建读书笔记源稿
+
+=M-x douban-new-annotation= 通过书名搜索或标准图书条目 URL 选择图书，
+然后创建 =.org= 源稿。文件选择器默认从
+=douban-annotation-directory= 开始；目录、文件安全性、新 tab 与
+=douban-mode= 的行为与 =douban-new-review= 一致。本命令同样只生成
+本地模板。
+
 ** 编辑 metadata
 
-读书笔记不提供专门的新建命令。在 Org 文件中直接写出必填的
+读书笔记可用上述命令新建，也可在 Org 文件中直接写出必填的
 =#+DOUBAN_ANNOTATION_SUBJECT_ID:=，再通过当前补全前端补全
 =#+DOUBAN_ANNOTATION_PRIVACY:= 等字段。新日记和新广播分别写出空的
 =#+DOUBAN_NOTE_ID:= 或 =#+DOUBAN_STATUS_ID:=；空 ID 表示尚未发布，成功后
@@ -57,8 +65,9 @@ Org 直接从完整关键字前缀推断内容类型，例如 =#+DOUBAN_REVIEW_S
 也不读取这种空容器关键字。每份源稿至少需要一个属于自身类型的实际字段；
 混用不同类型的字段会直接报错。
 
-=douban-mode= 不会扫描或自动识别普通 Org 文件。=douban-new-review= 创建的
-长评源稿会显式启用它；手工创建或重新打开其它豆瓣源稿时，按需运行：
+=douban-mode= 不会扫描或自动识别普通 Org 文件。=douban-new-review= 和
+=douban-new-annotation= 创建的源稿会显式启用它；手工创建或重新打开其它
+豆瓣源稿时，按需运行：
 
 #+begin_example
 M-x douban-mode
@@ -249,6 +258,7 @@ M-x douban-publish
 | 变量                                | 默认值                          | 作用                                                     |
 |-------------------------------------+---------------------------------+----------------------------------------------------------|
 | =douban-review-directory=           | XDG 文档目录下的 =douban/reviews/= | =douban-new-review= 默认创建源稿的目录                |
+| =douban-annotation-directory=       | XDG 文档目录下的 =douban/annotations/= | =douban-new-annotation= 默认创建源稿的目录        |
 | =douban-default-reply-limit=        | =all=                           | 新建公开读书笔记和广播的回复范围；也用于读书笔记从私密切回公开 |
 | =douban-default-original=           | =t=                             | 长评、读书笔记和普通广播的全局原创声明开关               |
 | =douban-review-send-broadcast=      | =t=                             | 长评和读书笔记是否发送并保留关联广播                     |

@@ -93,6 +93,18 @@
   :type 'directory
   :group 'douban)
 
+(defcustom douban-annotation-directory
+  (file-name-as-directory
+   (expand-file-name
+    "douban/annotations"
+    (or (xdg-user-dir "DOCUMENTS")
+        (expand-file-name "Documents" "~"))))
+  "`douban-new-annotation' 默认创建读书笔记源稿的目录。
+交互调用新建命令时，如果该目录尚不存在，会自动创建。Lisp 调用显式传入的
+文件路径不受本选项限制。"
+  :type 'directory
+  :group 'douban)
+
 (defcustom douban-default-reply-limit 'all
   "新建读书笔记和普通广播的默认回复范围。
 `all' 表示所有人可回复，`following' 表示仅我关注的用户可回复。更新时
@@ -6413,13 +6425,21 @@ SUBJECT-TYPE 是 `book'、`movie'、`tv'、`music' 或 `game'。INPUT 为 nil
     (message "douban: 已创建 %s" file)
     file))
 
-(defun douban--ensure-review-directory ()
-  "返回规范化的 `douban-review-directory'，并确保它存在。"
+(defun douban--ensure-source-directory (directory)
+  "返回规范化的 DIRECTORY，并确保它存在。"
   (let ((directory
          (file-name-as-directory
-          (expand-file-name douban-review-directory))))
+          (expand-file-name directory))))
     (make-directory directory t)
     directory))
+
+(defun douban--ensure-review-directory ()
+  "返回规范化的 `douban-review-directory'，并确保它存在。"
+  (douban--ensure-source-directory douban-review-directory))
+
+(defun douban--ensure-annotation-directory ()
+  "返回规范化的 `douban-annotation-directory'，并确保它存在。"
+  (douban--ensure-source-directory douban-annotation-directory))
 
 ;;;###autoload
 (defun douban-new-review (subject-type subject file)
@@ -6443,6 +6463,29 @@ FILE 必须是 Org 文件。创建成功后在新 tab 中打开源稿并启用 `
          (meta
           (douban--meta-from-plist
            (list :review parsed)
+           nil)))
+    (douban--create-source-file file meta)))
+
+;;;###autoload
+(defun douban-new-annotation (subject file)
+  "创建豆瓣读书笔记源稿 FILE。
+SUBJECT 是规范豆瓣图书条目 URL。交互调用时可输入图书 URL 或书名，
+并从 `douban-annotation-directory' 读取 FILE。FILE 必须是 Org 文件。
+创建成功后在新 tab 中打开源稿并启用 `douban-mode'。本命令只生成本地
+模板，不打开网页编辑器，也不推断标题。"
+  (interactive
+   (list
+    (douban-search-subject "book")
+    (read-file-name
+     "读书笔记源稿（.org）: "
+     (douban--ensure-annotation-directory) nil nil)))
+  (let* ((parsed
+          (douban--review-subject-from-url "book" subject))
+         (meta
+          (douban--meta-from-plist
+           (list
+            :annotation
+            (list :subject-id (plist-get parsed :subject-id)))
            nil)))
     (douban--create-source-file file meta)))
 
